@@ -1,0 +1,168 @@
+/* TideLog dashboard — vanilla JS, no build step. */
+
+const REFRESH_MS = 30_000;
+const REFERENCE_DRAFT_M = 7.0;
+
+const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
+const dayTimeFmt = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+function fmtTime(iso) {
+  return timeFmt.format(new Date(iso));
+}
+
+function fmtDayTime(iso) {
+  return dayTimeFmt.format(new Date(iso));
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  return res.json();
+}
+
+function renderArrivals(arrivals) {
+  const body = document.getElementById('arrivals-body');
+  body.replaceChildren();
+
+  if (arrivals.length === 0) {
+    const row = el('tr');
+    const cell = el('td', 'empty', 'No arrivals logged yet.');
+    cell.colSpan = 7;
+    row.appendChild(cell);
+    body.appendChild(row);
+    return;
+  }
+
+  const sorted = [...arrivals].sort((a, b) => new Date(a.eta) - new Date(b.eta));
+  for (const arrival of sorted) {
+    const row = el('tr');
+
+    const vessel = el('td', 'vessel', arrival.vesselName);
+    if (arrival.imo) vessel.appendChild(el('span', 'imo', arrival.imo));
+    row.appendChild(vessel);
+
+    const type = el('td');
+    type.appendChild(el('span', 'pill pill-type', arrival.vesselType));
+    row.appendChild(type);
+
+    row.appendChild(el('td', null, `${arrival.lengthM} m`));
+    row.appendChild(el('td', null, `${arrival.draftM} m`));
+    row.appendChild(el('td', null, fmtDayTime(arrival.eta)));
+
+    const status = el('td');
+    status.appendChild(el('span', `pill pill-${arrival.status}`, arrival.status));
+    row.appendChild(status);
+
+    row.appendChild(el('td', null, arrival.berth ? arrival.berth.berthId : '—'));
+    body.appendChild(row);
+  }
+
+  document.getElementById('arrivals-count').textContent =
+    `${arrivals.length} vessel${arrivals.length === 1 ? '' : 's'} logged`;
+}
+
+function renderBerths(berths) {
+  const list = document.getElementById('berth-list');
+  list.replaceChildren();
+
+  for (const berth of berths) {
+    const item = el('li', 'berth');
+    item.appendChild(el('span', `berth-lamp ${berth.occupied ? 'occupied' : 'free'}`));
+
+    const info = el('div');
+    info.appendChild(el('div', 'berth-name', `${berth.id} · ${berth.name}`));
+    info.appendChild(el('div', 'berth-spec', `${berth.lengthM} m LOA · ${berth.depthM} m depth`));
+    item.appendChild(info);
+
+    const occupant = el('div', 'berth-occupant');
+    if (berth.occupant) {
+      occupant.appendChild(document.createTextNode(berth.occupant.vesselName));
+      occupant.appendChild(el('span', 'until', `until ${fmtDayTime(berth.occupant.to)}`));
+    } else {
+      occupant.textContent = 'Available';
+    }
+    item.appendChild(occupant);
+
+    list.appendChild(item);
+  }
+
+  const occupied = berths.filter((b) => b.occupied).length;
+  document.getElementById('stat-berths').textContent = `${occupied} / ${berths.length}`;
+  document.getElementById('berths-note').textContent = `${berths.length - occupied} available`;
+}
+
+function renderWindows(windows) {
+  const box = document.getElementById('windows');
+  box.replaceChildren();
+
+  if (windows.length === 0) {
+    box.appendChild(el('p', 'empty', 'No safe windows in the next 48 hours at this draft.'));
+    document.getElementById('stat-window').textContent = 'none';
+    return;
+  }
+
+  for (const w of windows) {
+    const chip = el('div', 'window-chip', `${fmtDayTime(w.start)} → ${fmtDayTime(w.end)}`);
+    const hours = Math.floor(w.durationMinutes / 60);
+    const minutes = w.durationMinutes % 60;
+    chip.appendChild(el('span', 'dur', `${hours} h ${String(minutes).padStart(2, '0')} m open`));
+    box.appendChild(chip);
+  }
+
+  const now = Date.now();
+  const current = windows.find((w) => new Date(w.start) <= now && now < new Date(w.end));
+  const upcoming = windows.find((w) => new Date(w.start) > now);
+  const stat = document.getElementById('stat-window');
+  if (current) {
+    stat.textContent = `open now · ${fmtTime(current.end)}`;
+  } else if (upcoming) {
+    stat.textContent = fmtDayTime(upcoming.start);
+  } else {
+    stat.textContent = 'closed';
+  }
+}
+
+async function refresh() {
+  try {
+    const [arrivalsRes, berthsRes, windowsRes] = await Promise.all([
+      fetchJson('/api/arrivals'),
+      fetchJson('/api/berths'),
+      fetchJson(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
+    ]);
+
+    renderArrivals(arrivalsRes.arrivals);
+    renderBerths(berthsRes.berths);
+    renderWindows(windowsRes.windows);
+
+    const arrivals = arrivalsRes.arrivals;
+    document.getElementById('stat-expected').textContent = arrivals.filter(
+      (a) => a.status === 'expected'
+    ).length;
+    document.getElementById('stat-inport').textContent = arrivals.filter(
+      (a) => a.status === 'arrived'
+    ).length;
+    document.getElementById('status-badge').textContent = 'LIVE';
+  } catch {
+    document.getElementById('status-badge').textContent = 'OFFLINE';
+  }
+}
+
+function tickClock() {
+  document.getElementById('clock').textContent = timeFmt.format(new Date());
+}
+
+tickClock();
+setInterval(tickClock, 1000);
+refresh();
+setInterval(refresh, REFRESH_MS);

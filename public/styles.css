@@ -1,0 +1,374 @@
+:root {
+  --navy-900: #0b1f33;
+  --navy-800: #10293f;
+  --navy-700: #17364f;
+  --ink: #16283a;
+  --muted: #5b7186;
+  --line: #dbe4ec;
+  --paper: #f4f7fa;
+  --card: #ffffff;
+  --teal: #0e7c86;
+  --teal-soft: #e0f2f3;
+  --brass: #b07d2b;
+  --brass-soft: #f6ecd9;
+  --green: #1f7a4d;
+  --green-soft: #e2f2e9;
+  --red: #a63d3d;
+  --red-soft: #f7e5e5;
+  --radius: 10px;
+  font-size: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    'Avenir Next',
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  line-height: 1.45;
+}
+
+/* ---------- top bar ---------- */
+
+.topbar {
+  background: linear-gradient(180deg, var(--navy-900), var(--navy-800));
+  color: #eaf1f7;
+  border-bottom: 3px solid var(--brass);
+}
+
+.topbar-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.brand-mark {
+  width: 40px;
+  height: 40px;
+  fill: var(--brass);
+  flex: none;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 1.45rem;
+  letter-spacing: 0.04em;
+}
+
+.brand-sub {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #9db4c8;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.clock {
+  font-variant-numeric: tabular-nums;
+  font-size: 1.15rem;
+  color: #d7e3ee;
+}
+
+.badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+}
+
+.badge-live {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.badge-live::before {
+  content: '●';
+  margin-right: 0.35rem;
+}
+
+/* ---------- layout ---------- */
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 2.5rem;
+  display: grid;
+  gap: 1.25rem;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 1.25rem;
+}
+
+@media (max-width: 860px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- stat tiles ---------- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.stat {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.9rem 1.1rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stat-label small {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+
+.stat-value {
+  font-size: 1.9rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--navy-800);
+}
+
+.stat-value-sm {
+  font-size: 1.2rem;
+  line-height: 1.9rem;
+}
+
+/* ---------- panels & tables ---------- */
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.02em;
+}
+
+.panel-note {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.55rem 1.1rem;
+  white-space: nowrap;
+}
+
+thead th {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+tbody tr:nth-child(even) {
+  background: #f8fafc;
+}
+
+td.vessel {
+  font-weight: 600;
+}
+
+td .imo {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 1.5rem;
+}
+
+/* ---------- pills ---------- */
+
+.pill {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.pill-expected {
+  background: var(--brass-soft);
+  color: var(--brass);
+}
+
+.pill-arrived {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.pill-type {
+  background: var(--teal-soft);
+  color: var(--teal);
+  text-transform: capitalize;
+}
+
+/* ---------- berth board ---------- */
+
+.berth-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0;
+}
+
+.berth {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.6rem 1.1rem;
+}
+
+.berth + .berth {
+  border-top: 1px dashed var(--line);
+}
+
+.berth-lamp {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.berth-lamp.free {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft);
+}
+
+.berth-lamp.occupied {
+  background: var(--red);
+  box-shadow: 0 0 0 3px var(--red-soft);
+}
+
+.berth-name {
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.berth-spec {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.berth-occupant {
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: var(--navy-700);
+  text-align: right;
+}
+
+.berth-occupant .until {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+/* ---------- tide windows ---------- */
+
+.windows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 1rem 1.1rem;
+}
+
+.window-chip {
+  background: var(--teal-soft);
+  border: 1px solid #bcdfe1;
+  color: var(--teal);
+  border-radius: 8px;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.window-chip .dur {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* ---------- footer ---------- */
+
+.footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.75rem;
+  padding-bottom: 1.5rem;
+}

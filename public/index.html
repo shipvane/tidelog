@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TideLog — Harbor Operations</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9A%93%3C/text%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 2a2.6 2.6 0 0 0-1 5v2H7v2h4v8.3a8.1 8.1 0 0 1-5.9-5l1.6.9.9-1.7L3 10.9l-1.6 4.6 1.8.6.5-1.6A10.1 10.1 0 0 0 12 22a10.1 10.1 0 0 0 8.3-7.5l.5 1.6 1.8-.6L21 10.9l-4.6 2.6.9 1.7 1.6-.9a8.1 8.1 0 0 1-5.9 5V11h4V9h-4V7a2.6 2.6 0 0 0-1-5Zm0 2a.9.9 0 1 1 0 1.8A.9.9 0 0 1 12 4Z"
+            />
+          </svg>
+          <div>
+            <h1>TideLog</h1>
+            <p class="brand-sub">Port of Graythorn — Harbor Operations</p>
+          </div>
+        </div>
+        <div class="topbar-meta">
+          <span class="clock" id="clock">--:--</span>
+          <span class="badge badge-live" id="status-badge">LIVE</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="stats" aria-label="Harbor status">
+        <article class="stat">
+          <span class="stat-label">Vessels expected</span>
+          <span class="stat-value" id="stat-expected">–</span>
+        </article>
+        <article class="stat">
+          <span class="stat-label">Vessels in port</span>
+          <span class="stat-value" id="stat-inport">–</span>
+        </article>
+        <article class="stat">
+          <span class="stat-label">Berths occupied</span>
+          <span class="stat-value" id="stat-berths">–</span>
+        </article>
+        <article class="stat">
+          <span class="stat-label">Next safe window <small>(7.0 m draft)</small></span>
+          <span class="stat-value stat-value-sm" id="stat-window">–</span>
+        </article>
+      </section>
+
+      <div class="columns">
+        <section class="panel" aria-labelledby="arrivals-heading">
+          <div class="panel-head">
+            <h2 id="arrivals-heading">Arrivals log</h2>
+            <span class="panel-note" id="arrivals-count"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Vessel</th>
+                  <th>Type</th>
+                  <th>LOA</th>
+                  <th>Draft</th>
+                  <th>ETA</th>
+                  <th>Status</th>
+                  <th>Berth</th>
+                </tr>
+              </thead>
+              <tbody id="arrivals-body">
+                <tr>
+                  <td colspan="7" class="empty">Loading…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="berths-heading">
+          <div class="panel-head">
+            <h2 id="berths-heading">Berth board</h2>
+            <span class="panel-note" id="berths-note"></span>
+          </div>
+          <ul class="berth-list" id="berth-list"></ul>
+        </section>
+      </div>
+
+      <section class="panel" aria-labelledby="tides-heading">
+        <div class="panel-head">
+          <h2 id="tides-heading">Safe entry windows — next 48 h</h2>
+          <span class="panel-note">Channel 6.0 m at chart datum · 0.5 m under-keel clearance</span>
+        </div>
+        <div class="windows" id="windows"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>TideLog v0.1 · harbor operations logbook · times shown in your local timezone</p>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
