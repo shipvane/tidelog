@@ -4,6 +4,7 @@ const express = require('express');
 
 const { normalizeManifest, VESSEL_TYPES } = require('../lib/manifest');
 const { findBerth } = require('../lib/berths');
+const { arrivalsToCsv } = require('../lib/csv');
 const db = require('./db');
 
 const router = express.Router();
@@ -41,6 +42,28 @@ router.get('/', (req, res) => {
   }
 
   res.json({ arrivals: arrivals.map(withBerth) });
+});
+
+/**
+ * Export the current arrival log as a CSV file for archiving.
+ *
+ * Returns one row per arrival with columns: id, vesselName, vesselType,
+ * lengthM, draftM, imo, eta, status, berthId, berthFrom, berthTo,
+ * loggedAt, arrivedAt.
+ *
+ * Responds with Content-Type: text/csv and a Content-Disposition header
+ * that suggests a dated filename so the harbor office can save the day sheet.
+ */
+router.get('/export.csv', (req, res) => {
+  const arrivals = [...db.state.arrivals.values()].map(withBerth);
+  const csv = arrivalsToCsv(arrivals);
+
+  const dateStamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const filename = `arrivals-${dateStamp}.csv`;
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(csv);
 });
 
 /** Log a new expected arrival from a manifest. */
