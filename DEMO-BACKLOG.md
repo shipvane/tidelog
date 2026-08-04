@@ -68,3 +68,36 @@ Let `GET /api/arrivals` accept `?type=tanker` (validated against the known
 vessel types, 400 on junk) and add a type dropdown to the dashboard that
 re-fetches the arrivals table with the filter applied. Counts in the stat
 tiles should follow the filter.
+
+### 9. Agents keep getting surprised by berth changes
+
+Shipping agents say they only find out their vessel was moved to a
+different berth after it already happened. Can we do something about that?
+
+_(Deliberately underspecified — file it as written and let enrichment turn
+it into acceptance criteria before anyone implements it.)_
+
+### 10. Allow rafting at Fisherman's Wharf
+
+When the harbor is busy, small craft raft two-abreast at Fisherman's Wharf
+(berth B6). B6 may hold up to two vessels at the same time, but only while
+**both** are under 20 m length overall; every other berth stays strictly
+single-occupancy. The assignment flow should accept a second qualifying
+vessel at B6 instead of reporting a conflict, the berth board should show
+both occupants, and turning rafting off again should be a one-line config
+change.
+
+_(Touches the shared interval/occupancy invariants in `lib/berths.js`, so
+the existing test suite keeps the implementation honest.)_
+
+### 11. Agent notifications for port call events
+
+Agents want to hear about their vessel's port call as it happens instead of
+polling the dashboard: arrival confirmed, berth assigned or changed, vessel
+flagged overdue, departure logged. Let an agent register webhook URLs per
+vessel (register / list / delete), fire events from each of those flows
+with a retry on delivery failure, keep a delivery log, and add a dashboard
+panel showing recent deliveries with a manual re-send.
+
+_(Deliberately bigger than one PR — good for showing decomposition into
+subtasks rather than a single hero commit.)_
