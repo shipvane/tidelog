@@ -305,6 +305,21 @@ td .imo {
   color: var(--green);
 }
 
+.pill-overdue {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.pill-departed {
+  background: #eef2f5;
+  color: var(--muted);
+}
+
+.pill-failed {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
 .pill-type {
   background: var(--teal-soft);
   color: var(--teal);
@@ -395,6 +410,46 @@ td .imo {
   font-size: 0.7rem;
   font-weight: 500;
   color: var(--muted);
+}
+
+/* ---------- notifications panel ---------- */
+
+td.notif-time {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+td.notif-url {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-family: monospace;
+}
+
+td.notif-retry {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.btn-resend {
+  background: var(--teal-soft);
+  color: var(--teal);
+  border: 1px solid #bcdfe1;
+  border-radius: 6px;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-resend:hover {
+  background: var(--teal);
+  color: #fff;
+  border-color: var(--teal);
 }
 
 /* ---------- footer ---------- */

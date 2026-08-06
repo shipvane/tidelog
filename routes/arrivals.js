@@ -5,6 +5,7 @@ const express = require('express');
 const { normalizeManifest, VESSEL_TYPES } = require('../lib/manifest');
 const { findBerth } = require('../lib/berths');
 const { arrivalsToCsv } = require('../lib/csv');
+const { fireEvent } = require('../lib/webhooks');
 const db = require('./db');
 
 const router = express.Router();
@@ -25,7 +26,8 @@ function withBerth(arrival) {
   };
 }
 
-/** List arrivals, optionally filtered by ?status=expected|arrived and/or ?type=<vesselType>. */
+/** List arrivals, optionally filtered by ?status=expected|arrived|departed|overdue
+ *  and/or ?type=<vesselType>. */
 router.get('/', (req, res) => {
   let arrivals = [...db.state.arrivals.values()];
 
@@ -103,6 +105,70 @@ router.post('/:id/arrive', (req, res) => {
   }
   arrival.status = 'arrived';
   arrival.arrivedAt = arrivedAt.toISOString();
+
+  fireEvent(db.state.subscriptions, db.state.deliveryLog, arrival.vesselName, 'arrival_confirmed', {
+    arrivalId: arrival.id,
+    arrivedAt: arrival.arrivedAt,
+    eta: arrival.eta,
+  });
+
+  return res.json({ arrival: withBerth(arrival) });
+});
+
+/**
+ * Flag an expected vessel as overdue (still expected, past ETA).
+ * Fires a vessel_overdue webhook event.
+ */
+router.post('/:id/overdue', (req, res) => {
+  const arrival = db.state.arrivals.get(req.params.id);
+  if (!arrival) {
+    return res.status(404).json({ error: 'arrival not found' });
+  }
+  if (arrival.status !== 'expected') {
+    return res.status(409).json({ error: 'only expected vessels can be marked overdue' });
+  }
+  arrival.status = 'overdue';
+
+  fireEvent(db.state.subscriptions, db.state.deliveryLog, arrival.vesselName, 'vessel_overdue', {
+    arrivalId: arrival.id,
+    eta: arrival.eta,
+    overdueAt: new Date().toISOString(),
+  });
+
+  return res.json({ arrival: withBerth(arrival) });
+});
+
+/**
+ * Log the departure of an arrived (or overdue) vessel.
+ * Fires a departure_logged webhook event.
+ */
+router.post('/:id/depart', (req, res) => {
+  const arrival = db.state.arrivals.get(req.params.id);
+  if (!arrival) {
+    return res.status(404).json({ error: 'arrival not found' });
+  }
+  if (!['arrived', 'overdue'].includes(arrival.status)) {
+    return res.status(409).json({ error: 'only arrived or overdue vessels can be departed' });
+  }
+
+  let departedAt = new Date();
+  if (req.body && req.body.time !== undefined) {
+    departedAt = new Date(req.body.time);
+    if (!Number.isFinite(departedAt.getTime())) {
+      return res.status(400).json({ error: 'time must be a valid date/time' });
+    }
+  }
+  arrival.status = 'departed';
+  arrival.departedAt = departedAt.toISOString();
+
+  // Release the berth assignment when the vessel departs.
+  db.state.assignments = db.state.assignments.filter((a) => a.arrivalId !== arrival.id);
+
+  fireEvent(db.state.subscriptions, db.state.deliveryLog, arrival.vesselName, 'departure_logged', {
+    arrivalId: arrival.id,
+    departedAt: arrival.departedAt,
+  });
+
   return res.json({ arrival: withBerth(arrival) });
 });
 
@@ -148,6 +214,15 @@ router.post('/:id/assign-berth', (req, res) => {
     to,
   };
   db.state.assignments = [...others, assignment];
+
+  fireEvent(db.state.subscriptions, db.state.deliveryLog, arrival.vesselName, 'berth_assigned', {
+    arrivalId: arrival.id,
+    berthId: berth.id,
+    berthName: berth.name,
+    from,
+    to,
+  });
+
   return res.json({ assignment, berth });
 });
 

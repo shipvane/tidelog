@@ -2,9 +2,9 @@
 
 /**
  * In-memory store for the TideLog demo. A Map of arrivals, an array of
- * berth assignments, the harbor's berth registry, and a generated tide
- * table for the next 48 hours. No real database — restarting the server
- * resets the log.
+ * berth assignments, the harbor's berth registry, a generated tide
+ * table for the next 48 hours, webhook subscriptions, and a delivery log.
+ * No real database — restarting the server resets the log.
  */
 
 /** Charted depth of the approach channel at chart datum (meters). */
@@ -53,6 +53,15 @@ const state = {
   berths: [],
   tideTable: [],
   nextArrivalId: 1,
+  /** @type {Array<{id: string, vesselName: string, url: string, createdAt: string}>} */
+  subscriptions: [],
+  nextWebhookId: 0,
+  /**
+   * Delivery log entries. Each entry: `{ id, subscriptionId, vesselName, url,
+   * eventType, attemptedAt, ok, httpStatus, error, retried }`.
+   * @type {object[]}
+   */
+  deliveryLog: [],
 };
 
 /** Restore the store to a clean seeded state (berths + tide table only). */
@@ -62,6 +71,9 @@ function reset() {
   state.berths = BERTH_SEED.map((berth) => ({ ...berth }));
   state.tideTable = buildTideTable();
   state.nextArrivalId = 1;
+  state.subscriptions = [];
+  state.nextWebhookId = 0;
+  state.deliveryLog = [];
 }
 
 function createArrival(fields) {
