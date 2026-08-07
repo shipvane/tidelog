@@ -1,0 +1,27 @@
+# AWS App Runner source configuration for the public demo at demo.shipvane.com.
+#
+# Source-based (not a container image) on purpose: App Runner rebuilds and
+# redeploys on every push to main, so a feature Shipvane's Engine merges is
+# live on the demo minutes later without any release step. That auto-updating
+# behaviour is the point of the demo.
+#
+# The store is in-memory (routes/db.js) and re-seeds on boot, so every deploy
+# resets the harbor to a clean, populated state — no database, no backups,
+# nothing to leak.
+version: 1.0
+runtime: nodejs18
+build:
+  commands:
+    build:
+      - npm ci --omit=dev
+run:
+  runtime-version: 20
+  command: node server.js
+  network:
+    port: 8080
+  env:
+    - name: PORT
+      value: '8080'
+    # Public demo: reject writes. See the guard in server.js.
+    - name: TIDELOG_READ_ONLY
+      value: 'true'
