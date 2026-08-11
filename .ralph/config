@@ -1,0 +1,58 @@
+# Capstan per-repo configuration for the central loop (shipvane/capstan).
+# Run: ~/dev/shipvane/capstan/scripts/ralph-loop.sh --repo-dir ~/dev/shipvane/tidelog
+# Keep it valid POSIX shell (it is `source`d by the loop).
+#
+# The `.ralph/` path and RALPH_* names are the loop's wire format and were left
+# alone during the ralph -> capstan rename — do not "fix" them here.
+
+# Human-readable repo name (used in the agent prompt).
+RALPH_REPO_NAME="tidelog"
+
+# Branch the loop syncs, branches off, and targets PRs at.
+#
+# NOTE: this repo is the public demo at demo.shipvane.com and auto-deploys on
+# push to main. The loop only ever opens PRs — it never pushes the base branch —
+# so merging stays a human decision. Keep it that way.
+RALPH_BASE_BRANCH="main"
+
+# Backlog file the agent reads and checks items off in.
+#
+# NOT DEMO-BACKLOG.md — that file is a demo prop holding features deliberately
+# left unbuilt (two are near-duplicates on purpose, to exercise duplicate
+# detection). Building them would spoil the demo.
+RALPH_BACKLOG_FILE="docs/RALPH-BACKLOG.md"
+
+# The pre-commit gate the agent must pass before pushing.
+#
+# Mirrors shipvane-pipeline.json's gate_command, with one change: `npm install`
+# rather than `npm ci`. The loop re-runs this every iteration and `npm ci` wipes
+# node_modules each time; the strict lockfile-exact install still happens in CI
+# on the PR, which is where it protects anything.
+RALPH_GATE="npm install --no-audit --no-fund && npm run lint && npm run format:check && npx jest --passWithNoTests"
+
+# Repo-specific forbidden paths (one per line; keep the indentation for prompt
+# formatting). The loop ALWAYS also forbids scripts/ralph-loop.sh, .ralph/config,
+# .github/workflows/, and the backlog history — no need to repeat those here.
+RALPH_FORBIDDEN="    apprunner.yaml               (deploy config for demo.shipvane.com)
+    shipvane-pipeline.json       (pipeline gate config — changing it changes the gate)
+    DEMO-BACKLOG.md              (demo prop: features deliberately left unbuilt)"
+
+# --- Loop mode --------------------------------------------------------------
+# md + local: the backlog file above, implemented by `claude -p` in this
+# checkout. TideLog also has a real board (shipvane-demo -> SVD, MCP at
+# mcp.shipvane.com), so `--source jira --engine shipvane` is available and would
+# route through the Fargate harness instead; that needs MCP auth
+# (RALPH_MCP_REFRESH_TOKEN) and is a per-invocation choice, not a config change.
+RALPH_SOURCE="md"
+RALPH_ENGINE="local"
+
+RALPH_JIRA_BOARD=""
+RALPH_MCP_URL=""
+
+# Model passed to claude via --model.
+RALPH_MODEL="claude-opus-4-8"
+
+# Address Copilot's PR review in-loop. On this repo it is worth it: SVD-12 adds a
+# service worker to a live public demo, where a sticky bad SW is not fixed by the
+# next deploy.
+RALPH_COPILOT_REVIEW="1"
