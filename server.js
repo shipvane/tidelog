@@ -11,6 +11,19 @@ const db = require('./routes/db');
 
 const app = express();
 
+// demo.shipvane.com is a legacy alias: the app lives at tidelog.shipvane.com
+// now, and the old name 301s there so existing links keep working — and so
+// demo.* can later front a different demo product with nothing but a
+// repointed redirect. Host-based, so both domains can stay attached to this
+// one App Runner service.
+app.use((req, res, next) => {
+  const host = String(req.headers.host || '').toLowerCase();
+  if (host === 'demo.shipvane.com' || host === 'www.demo.shipvane.com') {
+    return res.redirect(301, `https://tidelog.shipvane.com${req.originalUrl}`);
+  }
+  next();
+});
+
 app.use(express.json());
 
 // The public demo at demo.shipvane.com runs read-only: the store is in-memory
