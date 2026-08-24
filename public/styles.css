@@ -192,12 +192,45 @@ body {
   gap: 1rem;
   padding: 0.85rem 1.1rem;
   border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
 }
 
 .panel-head h2 {
   margin: 0;
   font-size: 1rem;
   letter-spacing: 0.02em;
+}
+
+.panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.86rem;
+}
+
+.panel-controls label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.panel-controls select {
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 0.86rem;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.panel-controls select:hover {
+  border-color: var(--muted);
+}
+
+.panel-controls select:focus {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
 }
 
 .panel-note {

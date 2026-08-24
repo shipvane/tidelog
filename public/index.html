@@ -55,6 +55,20 @@
         <section class="panel" aria-labelledby="arrivals-heading">
           <div class="panel-head">
             <h2 id="arrivals-heading">Arrivals log</h2>
+            <div class="panel-controls">
+              <label for="type-filter">Filter by type:</label>
+              <select id="type-filter">
+                <option value="">All types</option>
+                <option value="cargo">Cargo</option>
+                <option value="container">Container</option>
+                <option value="tanker">Tanker</option>
+                <option value="fishing">Fishing</option>
+                <option value="passenger">Passenger</option>
+                <option value="tug">Tug</option>
+                <option value="yacht">Yacht</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
             <span class="panel-note" id="arrivals-count"></span>
           </div>
           <div class="table-wrap">
