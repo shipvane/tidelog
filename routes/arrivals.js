@@ -2,7 +2,7 @@
 
 const express = require('express');
 
-const { normalizeManifest } = require('../lib/manifest');
+const { normalizeManifest, VESSEL_TYPES } = require('../lib/manifest');
 const { findBerth } = require('../lib/berths');
 const db = require('./db');
 
@@ -24,12 +24,22 @@ function withBerth(arrival) {
   };
 }
 
-/** List arrivals, optionally filtered by ?status=expected|arrived. */
+/** List arrivals, optionally filtered by ?status=expected|arrived and/or ?type=<vesselType>. */
 router.get('/', (req, res) => {
   let arrivals = [...db.state.arrivals.values()];
+
   if (req.query.status) {
     arrivals = arrivals.filter((a) => a.status === req.query.status);
   }
+
+  if (req.query.type) {
+    const type = req.query.type.toLowerCase().trim();
+    if (!VESSEL_TYPES.includes(type)) {
+      return res.status(400).json({ error: `type must be one of: ${VESSEL_TYPES.join(', ')}` });
+    }
+    arrivals = arrivals.filter((a) => a.vesselType === type);
+  }
+
   res.json({ arrivals: arrivals.map(withBerth) });
 });
 

@@ -87,6 +87,65 @@ describe('/api/arrivals', () => {
     expect(expected.body.arrivals).toHaveLength(1);
   });
 
+  test('GET ?type= filters by vessel type', async () => {
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselType: 'cargo' }));
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Selkie', vesselType: 'fishing', imo: undefined }));
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Tarn Voyager', vesselType: 'tanker', imo: undefined }));
+
+    const tankers = await request(app).get('/api/arrivals?type=tanker');
+    expect(tankers.status).toBe(200);
+    expect(tankers.body.arrivals).toHaveLength(1);
+    expect(tankers.body.arrivals[0].vesselName).toBe('Tarn Voyager');
+    expect(tankers.body.arrivals[0].vesselType).toBe('tanker');
+
+    const fishing = await request(app).get('/api/arrivals?type=fishing');
+    expect(fishing.status).toBe(200);
+    expect(fishing.body.arrivals).toHaveLength(1);
+    expect(fishing.body.arrivals[0].vesselName).toBe('Selkie');
+  });
+
+  test('GET ?type= is case-insensitive', async () => {
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Selkie', vesselType: 'fishing', imo: undefined }));
+
+    const lower = await request(app).get('/api/arrivals?type=fishing');
+    const upper = await request(app).get('/api/arrivals?type=FISHING');
+    const mixed = await request(app).get('/api/arrivals?type=FiShInG');
+
+    expect(lower.body.arrivals).toHaveLength(1);
+    expect(upper.body.arrivals).toHaveLength(1);
+    expect(mixed.body.arrivals).toHaveLength(1);
+  });
+
+  test('GET ?type= returns 400 for invalid vessel type', async () => {
+    const res = await request(app).get('/api/arrivals?type=submarine');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('type must be one of');
+    expect(res.body.error).toContain('cargo');
+    expect(res.body.error).toContain('tanker');
+  });
+
+  test('GET ?type= and ?status= can be combined', async () => {
+    const { body: cargo1 } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Selkie', vesselType: 'fishing', imo: undefined }));
+    await request(app).post(`/api/arrivals/${cargo1.arrival.id}/arrive`).send({});
+
+    const result = await request(app).get('/api/arrivals?type=cargo&status=arrived');
+    expect(result.status).toBe(200);
+    expect(result.body.arrivals).toHaveLength(1);
+    expect(result.body.arrivals[0].vesselType).toBe('cargo');
+    expect(result.body.arrivals[0].status).toBe('arrived');
+  });
+
   test('GET /:id returns one arrival and 404s on unknown ids', async () => {
     const { body } = await request(app).post('/api/arrivals').send(validManifest());
 

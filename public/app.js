@@ -133,10 +133,24 @@ function renderWindows(windows) {
   }
 }
 
+function getTypeFilter() {
+  return document.getElementById('type-filter').value;
+}
+
+function buildArrivalsUrl() {
+  const type = getTypeFilter();
+  let url = '/api/arrivals';
+  if (type) {
+    url += `?type=${encodeURIComponent(type)}`;
+  }
+  return url;
+}
+
 async function refresh() {
   try {
+    const arrivalsUrl = buildArrivalsUrl();
     const [arrivalsRes, berthsRes, windowsRes] = await Promise.all([
-      fetchJson('/api/arrivals'),
+      fetchJson(arrivalsUrl),
       fetchJson('/api/berths'),
       fetchJson(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
@@ -161,6 +175,10 @@ async function refresh() {
 function tickClock() {
   document.getElementById('clock').textContent = timeFmt.format(new Date());
 }
+
+document.getElementById('type-filter').addEventListener('change', () => {
+  refresh();
+});
 
 tickClock();
 setInterval(tickClock, 1000);
