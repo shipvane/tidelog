@@ -19,11 +19,11 @@ work items out of that file.** This file is the loop's actual queue.
 
 ## Running the loop against this repo
 
-Config lives in [`.ralph/config`](../.ralph/config) — the single source of truth
+Config lives in [`.capstan/config`](../.capstan/config) — the single source of truth
 for the gate, forbidden paths, and mode.
 
 ```bash
-~/dev/shipvane/capstan/scripts/ralph-loop.sh --repo-dir ~/dev/shipvane/tidelog
+~/dev/shipvane/capstan/scripts/capstan-loop.sh --repo-dir ~/dev/shipvane/tidelog
 ```
 
 TideLog also has a real board (`shipvane-demo` → SVD, MCP at mcp.shipvane.com),
