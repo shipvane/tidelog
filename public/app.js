@@ -146,6 +146,90 @@ function buildArrivalsUrl() {
   return url;
 }
 
+/** Map event type identifiers to human-readable labels. */
+const EVENT_LABELS = {
+  arrival_confirmed: 'Arrival confirmed',
+  berth_assigned: 'Berth assigned',
+  vessel_overdue: 'Vessel overdue',
+  departure_logged: 'Departure logged',
+};
+
+/** Trigger a manual resend for a delivery log entry, then refresh the panel. */
+async function resendDelivery(deliveryId) {
+  try {
+    await fetch(`/api/webhooks/deliveries/${deliveryId}/resend`, { method: 'POST' });
+    await refreshNotifications();
+  } catch {
+    // Silently ignore network errors on manual resend; the log will reflect the
+    // outcome on the next automatic refresh.
+  }
+}
+
+function renderNotifications(deliveries) {
+  const body = document.getElementById('notifications-body');
+  body.replaceChildren();
+
+  const note = document.getElementById('notifications-note');
+
+  if (deliveries.length === 0) {
+    const row = el('tr');
+    const cell = el('td', 'empty', 'No notifications sent yet.');
+    cell.colSpan = 7;
+    row.appendChild(cell);
+    body.appendChild(row);
+    note.textContent = '';
+    return;
+  }
+
+  const failed = deliveries.filter((d) => !d.ok).length;
+  note.textContent =
+    failed > 0 ? `${deliveries.length} sent · ${failed} failed` : `${deliveries.length} sent`;
+
+  for (const d of deliveries) {
+    const row = el('tr');
+
+    row.appendChild(el('td', 'notif-time', fmtDayTime(d.attemptedAt)));
+    row.appendChild(el('td', 'vessel', d.vesselName));
+    row.appendChild(el('td', null, EVENT_LABELS[d.eventType] || d.eventType));
+
+    // Truncate long URLs to keep the table readable.
+    const urlCell = el('td', 'notif-url');
+    const urlText = d.url.length > 40 ? `${d.url.slice(0, 37)}…` : d.url;
+    urlCell.title = d.url;
+    urlCell.textContent = urlText;
+    row.appendChild(urlCell);
+
+    const resultCell = el('td');
+    if (d.ok) {
+      resultCell.appendChild(el('span', 'pill pill-arrived', `${d.httpStatus} OK`));
+    } else {
+      const label = d.httpStatus ? `${d.httpStatus} Error` : 'Failed';
+      resultCell.appendChild(el('span', 'pill pill-failed', label));
+    }
+    row.appendChild(resultCell);
+
+    row.appendChild(el('td', 'notif-retry', d.retried ? 'Yes' : '—'));
+
+    const actionCell = el('td');
+    const btn = el('button', 'btn-resend', 'Resend');
+    btn.type = 'button';
+    btn.addEventListener('click', () => resendDelivery(d.id));
+    actionCell.appendChild(btn);
+    row.appendChild(actionCell);
+
+    body.appendChild(row);
+  }
+}
+
+async function refreshNotifications() {
+  try {
+    const data = await fetchJson('/api/webhooks/deliveries?limit=20');
+    renderNotifications(data.deliveries);
+  } catch {
+    // Non-fatal; keep showing last known state.
+  }
+}
+
 async function refresh() {
   try {
     const arrivalsUrl = buildArrivalsUrl();
@@ -170,6 +254,8 @@ async function refresh() {
   } catch {
     document.getElementById('status-badge').textContent = 'OFFLINE';
   }
+
+  await refreshNotifications();
 }
 
 function tickClock() {
