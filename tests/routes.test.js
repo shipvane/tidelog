@@ -343,3 +343,88 @@ describe('static dashboard', () => {
     expect(res.text).toContain('TideLog');
   });
 });
+
+describe('GET /api/arrivals/export.csv', () => {
+  test('returns 200 with text/csv content-type', async () => {
+    const res = await request(app).get('/api/arrivals/export.csv');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+  });
+
+  test('sets a Content-Disposition attachment header with a dated filename', async () => {
+    const res = await request(app).get('/api/arrivals/export.csv');
+    const disposition = res.headers['content-disposition'];
+    expect(disposition).toMatch(/^attachment; filename="/);
+    // filename should be arrivals-YYYY-MM-DD.csv
+    expect(disposition).toMatch(/arrivals-\d{4}-\d{2}-\d{2}\.csv"/);
+  });
+
+  test('returns only the header row when the log is empty', async () => {
+    const res = await request(app).get('/api/arrivals/export.csv');
+    const lines = res.text.split('\r\n');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe(
+      'id,vesselName,vesselType,lengthM,draftM,imo,eta,status,berthId,berthFrom,berthTo,loggedAt,arrivedAt'
+    );
+  });
+
+  test('returns one data row per logged arrival', async () => {
+    await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Selkie', vesselType: 'fishing', imo: undefined }));
+
+    const res = await request(app).get('/api/arrivals/export.csv');
+    const lines = res.text.split('\r\n');
+    // header + 2 data rows
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toContain('MV Northern Star');
+    expect(lines[2]).toContain('Selkie');
+  });
+
+  test('data row contains vessel name, type, dimensions, ETA, and status', async () => {
+    await request(app).post('/api/arrivals').send(validManifest());
+
+    const res = await request(app).get('/api/arrivals/export.csv');
+    const [, dataRow] = res.text.split('\r\n');
+    expect(dataRow).toContain('MV Northern Star');
+    expect(dataRow).toContain('cargo');
+    expect(dataRow).toContain('85');
+    expect(dataRow).toContain('6.2');
+    expect(dataRow).toContain('2026-03-01T14:00:00.000Z');
+    expect(dataRow).toContain('expected');
+    expect(dataRow).toContain('IMO 9074729');
+  });
+
+  test('data row includes berth columns after assignment', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/assign-berth`)
+      .send({ from: '2026-03-01T14:00:00Z', to: '2026-03-01T22:00:00Z' });
+
+    const res = await request(app).get('/api/arrivals/export.csv');
+    const [, dataRow] = res.text.split('\r\n');
+    expect(dataRow).toContain('B1');
+    expect(dataRow).toContain('2026-03-01T14:00:00.000Z');
+    expect(dataRow).toContain('2026-03-01T22:00:00.000Z');
+  });
+
+  test('data row includes arrivedAt timestamp after the vessel arrives', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/arrive`)
+      .send({ time: '2026-03-01T15:30:00Z' });
+
+    const res = await request(app).get('/api/arrivals/export.csv');
+    const [, dataRow] = res.text.split('\r\n');
+    expect(dataRow).toContain('arrived');
+    expect(dataRow).toContain('2026-03-01T15:30:00.000Z');
+  });
+
+  test('uses CRLF line endings throughout the document', async () => {
+    await request(app).post('/api/arrivals').send(validManifest());
+    const res = await request(app).get('/api/arrivals/export.csv');
+    // Strip CRLF pairs; no bare LF should remain
+    expect(res.text.replace(/\r\n/g, '')).not.toContain('\n');
+  });
+});
