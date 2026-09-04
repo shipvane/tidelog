@@ -176,6 +176,31 @@ describe('/api/arrivals', () => {
       .send({ time: 'high noon' });
     expect(res.status).toBe(400);
   });
+
+  test('POST /:id/depart closes out an open log entry (arrived vessel)', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app).post(`/api/arrivals/${body.arrival.id}/arrive`).send({});
+
+    // Verify it shows in the arrived list
+    let arrived = await request(app).get('/api/arrivals?status=arrived');
+    expect(arrived.body.arrivals).toHaveLength(1);
+    expect(arrived.body.arrivals[0].vesselName).toBe('MV Northern Star');
+
+    // Depart the vessel
+    const res = await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/depart`)
+      .send({ time: '2026-03-01T20:00:00Z' });
+    expect(res.status).toBe(200);
+
+    // Verify it no longer shows in the arrived list
+    arrived = await request(app).get('/api/arrivals?status=arrived');
+    expect(arrived.body.arrivals).toHaveLength(0);
+
+    // Verify it now shows in the departed list
+    const departed = await request(app).get('/api/arrivals?status=departed');
+    expect(departed.body.arrivals).toHaveLength(1);
+    expect(departed.body.arrivals[0].vesselName).toBe('MV Northern Star');
+  });
 });
 
 describe('POST /api/arrivals/:id/assign-berth', () => {
