@@ -24,6 +24,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "dayjs": "^1.11.23",
     "express": "^4.21.2"
   },
   "devDependencies": {
