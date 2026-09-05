@@ -6,6 +6,7 @@ const {
   heightAt,
   isSafeAt,
   safeWindows,
+  describeWindowStart,
 } = require('../lib/tides');
 
 /** Hourly ramp: 0m at 00:00 rising to 3m at 03:00, back to 0m at 06:00. */
@@ -179,5 +180,43 @@ describe('safeWindows', () => {
         { draftM: 6, channelDepthM: 6 }
       )
     ).toThrow(TypeError);
+  });
+});
+
+describe('describeWindowStart', () => {
+  const referenceTime = '2026-03-01T12:00:00Z';
+
+  test('returns a countdown for a window opening in the future', () => {
+    const window = { start: '2026-03-01T14:00:00Z', end: '2026-03-01T15:00:00Z' };
+    const description = describeWindowStart(window, referenceTime);
+    expect(description).toBe('in 2 hours');
+  });
+
+  test('returns a past countdown for a window that already opened', () => {
+    const window = { start: '2026-03-01T10:00:00Z', end: '2026-03-01T11:00:00Z' };
+    const description = describeWindowStart(window, referenceTime);
+    expect(description).toBe('2 hours ago');
+  });
+
+  test('handles minutes in the future', () => {
+    const window = { start: '2026-03-01T12:25:00Z', end: '2026-03-01T13:00:00Z' };
+    const description = describeWindowStart(window, referenceTime);
+    expect(description).toBe('in 25 minutes');
+  });
+
+  test('handles minutes in the past', () => {
+    const window = { start: '2026-03-01T11:35:00Z', end: '2026-03-01T12:00:00Z' };
+    const description = describeWindowStart(window, referenceTime);
+    expect(description).toBe('25 minutes ago');
+  });
+
+  test('throws for missing window object', () => {
+    expect(() => describeWindowStart(null, referenceTime)).toThrow(TypeError);
+    expect(() => describeWindowStart(undefined, referenceTime)).toThrow(TypeError);
+  });
+
+  test('throws for window without start property', () => {
+    const window = { end: '2026-03-01T15:00:00Z' };
+    expect(() => describeWindowStart(window, referenceTime)).toThrow(TypeError);
   });
 });
