@@ -333,6 +333,21 @@ describe('/api/tides', () => {
       400
     );
   });
+
+  test('GET /windows includes peakClearanceM and marginal flags for tide safety', async () => {
+    const res = await request(app).get('/api/tides/windows?draftM=6.5');
+    expect(res.status).toBe(200);
+    expect(res.body.windows.length).toBeGreaterThan(0);
+    for (const w of res.body.windows) {
+      expect(w).toHaveProperty('peakClearanceM');
+      expect(typeof w.peakClearanceM).toBe('number');
+      expect(Number.isFinite(w.peakClearanceM)).toBe(true);
+      expect(w).toHaveProperty('marginal');
+      expect(typeof w.marginal).toBe('boolean');
+      // marginal should be true when peak clearance is less than 0.3m
+      expect(w.marginal).toBe(w.peakClearanceM < 0.3);
+    }
+  });
 });
 
 describe('static dashboard', () => {

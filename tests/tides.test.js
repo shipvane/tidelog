@@ -111,6 +111,8 @@ describe('safeWindows', () => {
         start: '2026-03-01T01:00:00.000Z',
         end: '2026-03-01T05:00:00.000Z',
         durationMinutes: 240,
+        peakClearanceM: 2,
+        marginal: false,
       },
     ]);
   });
@@ -125,15 +127,34 @@ describe('safeWindows', () => {
     expect(windows[0].start).toBe('2026-03-01T01:30:00.000Z');
     expect(windows[0].end).toBe('2026-03-01T04:30:00.000Z');
     expect(windows[0].durationMinutes).toBe(180);
+    expect(windows[0].peakClearanceM).toBeCloseTo(1.5); // peak is 3m, required is 1.5m
+    expect(windows[0].marginal).toBe(false);
+  });
+
+  test('marks windows as marginal when peak clearance is less than 0.3m', () => {
+    // Peak is 3m, required is 2.8m, clearance is 0.2m
+    const windows = safeWindows(RAMP_TABLE, {
+      draftM: 8.3,
+      channelDepthM: 6,
+      safetyMarginM: 0.5,
+    }); // requires 2.8m
+    expect(windows).toHaveLength(1);
+    expect(windows[0].peakClearanceM).toBeCloseTo(0.2); // peak is 3m, required is 2.8m
+    expect(windows[0].marginal).toBe(true);
   });
 
   test('returns the whole span when the requirement is always met', () => {
     const windows = safeWindows(RAMP_TABLE, { draftM: 3, channelDepthM: 6, safetyMarginM: 0.5 });
+    // required = 3 + 0.5 - 6 = -2.5
+    // peak in window = 3m
+    // clearance = 3 - (-2.5) = 5.5m
     expect(windows).toEqual([
       {
         start: '2026-03-01T00:00:00.000Z',
         end: '2026-03-01T06:00:00.000Z',
         durationMinutes: 360,
+        peakClearanceM: 5.5,
+        marginal: false,
       },
     ]);
   });
@@ -159,6 +180,11 @@ describe('safeWindows', () => {
     expect(windows[0].start).toBe('2026-03-01T01:30:00.000Z');
     expect(windows[1].start).toBe('2026-03-01T07:30:00.000Z');
     expect(windows[1].end).toBe('2026-03-01T10:30:00.000Z');
+    // Both windows should have peak clearance info
+    expect(windows[0]).toHaveProperty('peakClearanceM');
+    expect(windows[0]).toHaveProperty('marginal');
+    expect(windows[1]).toHaveProperty('peakClearanceM');
+    expect(windows[1]).toHaveProperty('marginal');
   });
 
   test('handles a table that starts inside a safe period', () => {
@@ -167,6 +193,8 @@ describe('safeWindows', () => {
     expect(windows).toHaveLength(1);
     expect(windows[0].start).toBe('2026-03-01T02:00:00.000Z');
     expect(windows[0].end).toBe('2026-03-01T04:30:00.000Z');
+    expect(windows[0]).toHaveProperty('peakClearanceM');
+    expect(windows[0]).toHaveProperty('marginal');
   });
 
   test('rejects an invalid tide table', () => {
