@@ -176,6 +176,66 @@ describe('/api/arrivals', () => {
       .send({ time: 'high noon' });
     expect(res.status).toBe(400);
   });
+
+  test('POST /:id/depart closes out an open entry (status arrived -> departed)', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app).post(`/api/arrivals/${body.arrival.id}/arrive`).send({});
+
+    const res = await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/depart`)
+      .send({ time: '2026-03-01T20:00:00Z' });
+    expect(res.status).toBe(200);
+    expect(res.body.arrival.status).toBe('departed');
+    expect(res.body.arrival.departedAt).toBe('2026-03-01T20:00:00.000Z');
+  });
+
+  test('POST /:id/depart removes departed vessels from the arrived list', async () => {
+    const { body: starBody } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Selkie', imo: undefined }));
+
+    await request(app).post(`/api/arrivals/${starBody.arrival.id}/arrive`).send({});
+    const arrived1 = await request(app).get('/api/arrivals?status=arrived');
+    expect(arrived1.body.arrivals).toHaveLength(1);
+    expect(arrived1.body.arrivals[0].vesselName).toBe('MV Northern Star');
+
+    // Depart the vessel
+    await request(app).post(`/api/arrivals/${starBody.arrival.id}/depart`).send({});
+
+    // Now the arrived list should be empty
+    const arrived2 = await request(app).get('/api/arrivals?status=arrived');
+    expect(arrived2.body.arrivals).toHaveLength(0);
+
+    // But the departed list should have the vessel
+    const departed = await request(app).get('/api/arrivals?status=departed');
+    expect(departed.body.arrivals).toHaveLength(1);
+    expect(departed.body.arrivals[0].vesselName).toBe('MV Northern Star');
+  });
+
+  test('POST /:id/depart rejects an invalid departure time', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app).post(`/api/arrivals/${body.arrival.id}/arrive`).send({});
+
+    const res = await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/depart`)
+      .send({ time: 'not-a-date' });
+    expect(res.status).toBe(400);
+  });
+
+  test('POST /:id/depart returns 409 for non-arrived or non-overdue vessels', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+
+    const res = await request(app).post(`/api/arrivals/${body.arrival.id}/depart`).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain('arrived');
+  });
+
+  test('POST /:id/depart returns 404 for unknown arrivals', async () => {
+    const res = await request(app).post('/api/arrivals/ARR-999/depart').send({});
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('arrival not found');
+  });
 });
 
 describe('POST /api/arrivals/:id/assign-berth', () => {
