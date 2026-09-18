@@ -11,12 +11,12 @@
 const CHANNEL_DEPTH_M = 6.0;
 
 const BERTH_SEED = [
-  { id: 'B1', name: 'Quayside North', lengthM: 90, depthM: 7.5 },
-  { id: 'B2', name: 'Quayside South', lengthM: 120, depthM: 9.0 },
-  { id: 'B3', name: 'East Pier 1', lengthM: 60, depthM: 5.5 },
-  { id: 'B4', name: 'East Pier 2', lengthM: 45, depthM: 4.0 },
-  { id: 'B5', name: 'Deepwater Terminal', lengthM: 180, depthM: 12.0 },
-  { id: 'B6', name: "Fisherman's Wharf", lengthM: 30, depthM: 3.5 },
+  { id: 'B1', name: 'Quayside North', lengthM: 90, depthM: 7.5, outOfService: false },
+  { id: 'B2', name: 'Quayside South', lengthM: 120, depthM: 9.0, outOfService: false },
+  { id: 'B3', name: 'East Pier 1', lengthM: 60, depthM: 5.5, outOfService: false },
+  { id: 'B4', name: 'East Pier 2', lengthM: 45, depthM: 4.0, outOfService: false },
+  { id: 'B5', name: 'Deepwater Terminal', lengthM: 180, depthM: 12.0, outOfService: false },
+  { id: 'B6', name: "Fisherman's Wharf", lengthM: 30, depthM: 3.5, outOfService: false },
 ];
 
 /** Semidiurnal tide period (M2 constituent), in hours. */

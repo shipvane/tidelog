@@ -78,7 +78,10 @@ function renderBerths(berths) {
 
   for (const berth of berths) {
     const item = el('li', 'berth');
-    item.appendChild(el('span', `berth-lamp ${berth.occupied ? 'occupied' : 'free'}`));
+
+    // Show maintenance status with different lamp color
+    const lampClass = berth.outOfService ? 'maintenance' : berth.occupied ? 'occupied' : 'free';
+    item.appendChild(el('span', `berth-lamp ${lampClass}`));
 
     const info = el('div');
     info.appendChild(el('div', 'berth-name', `${berth.id} · ${berth.name}`));
@@ -86,7 +89,14 @@ function renderBerths(berths) {
     item.appendChild(info);
 
     const occupant = el('div', 'berth-occupant');
-    if (berth.occupant) {
+    if (berth.outOfService) {
+      occupant.textContent = '🔧 Maintenance';
+      if (berth.maintenanceReason) {
+        const reason = el('span', 'maint-reason', berth.maintenanceReason);
+        reason.className = 'maint-reason';
+        occupant.appendChild(reason);
+      }
+    } else if (berth.occupant) {
       occupant.appendChild(document.createTextNode(berth.occupant.vesselName));
       occupant.appendChild(el('span', 'until', `until ${fmtDayTime(berth.occupant.to)}`));
     } else {
@@ -97,9 +107,14 @@ function renderBerths(berths) {
     list.appendChild(item);
   }
 
-  const occupied = berths.filter((b) => b.occupied).length;
+  const occupied = berths.filter((b) => b.occupied && !b.outOfService).length;
+  const maintenance = berths.filter((b) => b.outOfService).length;
+  const available = berths.length - occupied - maintenance;
   document.getElementById('stat-berths').textContent = `${occupied} / ${berths.length}`;
-  document.getElementById('berths-note').textContent = `${berths.length - occupied} available`;
+  document.getElementById('berths-note').textContent =
+    maintenance > 0
+      ? `${available} available · ${maintenance} in maintenance`
+      : `${available} available`;
 }
 
 function renderWindows(windows) {

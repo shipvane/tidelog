@@ -242,6 +242,19 @@ describe('POST /api/arrivals/:id/assign-berth', () => {
     const missing = await request(app).post('/api/arrivals/ARR-999/assign-berth').send({});
     expect(missing.status).toBe(404);
   });
+
+  test('does not assign a vessel to an out-of-service berth', async () => {
+    // Put B1 in maintenance
+    await request(app).post('/api/berths/B1/maintenance').send({});
+
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    const res = await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/assign-berth`)
+      .send({ from: '2026-03-01T14:00:00Z', to: '2026-03-01T22:00:00Z' });
+    expect(res.status).toBe(200);
+    // Should fall back to B2 since B1 is in maintenance
+    expect(res.body.berth.id).toBe('B2');
+  });
 });
 
 describe('GET /api/arrivals/:id/dues', () => {
@@ -356,6 +369,7 @@ describe('/api/berths', () => {
       name: 'Quayside North',
       occupied: false,
       occupant: null,
+      outOfService: false,
     });
   });
 
@@ -386,6 +400,54 @@ describe('/api/berths', () => {
   test('GET /:id/schedule 404s on an unknown berth', async () => {
     const res = await request(app).get('/api/berths/B99/schedule');
     expect(res.status).toBe(404);
+  });
+
+  test('POST /:id/maintenance toggles the outOfService flag', async () => {
+    let res = await request(app).get('/api/berths');
+    const b1Before = res.body.berths.find((b) => b.id === 'B1');
+    expect(b1Before.outOfService).toBe(false);
+
+    // Toggle on
+    res = await request(app).post('/api/berths/B1/maintenance').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.berth.outOfService).toBe(true);
+
+    // Verify state persists
+    res = await request(app).get('/api/berths');
+    const b1After = res.body.berths.find((b) => b.id === 'B1');
+    expect(b1After.outOfService).toBe(true);
+
+    // Toggle off
+    res = await request(app).post('/api/berths/B1/maintenance').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.berth.outOfService).toBe(false);
+  });
+
+  test('POST /:id/maintenance stores an optional reason when entering maintenance', async () => {
+    const res = await request(app)
+      .post('/api/berths/B1/maintenance')
+      .send({ reason: 'Fender repair' });
+    expect(res.status).toBe(200);
+    expect(res.body.berth.outOfService).toBe(true);
+    expect(res.body.berth.maintenanceReason).toBe('Fender repair');
+  });
+
+  test('POST /:id/maintenance clears the reason when exiting maintenance', async () => {
+    // Enter maintenance with a reason
+    let res = await request(app).post('/api/berths/B1/maintenance').send({ reason: 'Dredging' });
+    expect(res.body.berth.maintenanceReason).toBe('Dredging');
+
+    // Exit maintenance (toggle off)
+    res = await request(app).post('/api/berths/B1/maintenance').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.berth.outOfService).toBe(false);
+    expect(res.body.berth.maintenanceReason).toBeUndefined();
+  });
+
+  test('POST /:id/maintenance 404s on an unknown berth', async () => {
+    const res = await request(app).post('/api/berths/B99/maintenance').send({});
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('berth not found');
   });
 });
 

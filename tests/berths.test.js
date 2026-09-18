@@ -3,9 +3,9 @@
 const { overlaps, fitsBerth, hasConflict, findBerth, occupantAt } = require('../lib/berths');
 
 const BERTHS = [
-  { id: 'B1', name: 'Quayside North', lengthM: 90, depthM: 7.5 },
-  { id: 'B2', name: 'Quayside South', lengthM: 120, depthM: 9.0 },
-  { id: 'B6', name: "Fisherman's Wharf", lengthM: 30, depthM: 3.5 },
+  { id: 'B1', name: 'Quayside North', lengthM: 90, depthM: 7.5, outOfService: false },
+  { id: 'B2', name: 'Quayside South', lengthM: 120, depthM: 9.0, outOfService: false },
+  { id: 'B6', name: "Fisherman's Wharf", lengthM: 30, depthM: 3.5, outOfService: false },
 ];
 
 function assignment(berthId, from, to, vesselName = 'Test Vessel') {
@@ -164,6 +164,25 @@ describe('findBerth', () => {
     expect(() =>
       findBerth(BERTHS, [], { lengthM: 25, draftM: 3 }, { from: window.to, to: window.from })
     ).toThrow(RangeError);
+  });
+
+  test('skips out-of-service berths', () => {
+    const berthsWithMaint = [
+      ...BERTHS.slice(0, 2),
+      { id: 'B6', name: "Fisherman's Wharf", lengthM: 30, depthM: 3.5, outOfService: true },
+    ];
+    const berth = findBerth(berthsWithMaint, [], { lengthM: 25, draftM: 3 }, window);
+    expect(berth.id).toBe('B1');
+  });
+
+  test('returns null when all fitting berths are out of service', () => {
+    const berthsWithMaint = [
+      { id: 'B1', name: 'Quayside North', lengthM: 90, depthM: 7.5, outOfService: true },
+      { id: 'B2', name: 'Quayside South', lengthM: 120, depthM: 9.0, outOfService: true },
+      { id: 'B6', name: "Fisherman's Wharf", lengthM: 30, depthM: 3.5, outOfService: true },
+    ];
+    const berth = findBerth(berthsWithMaint, [], { lengthM: 25, draftM: 3 }, window);
+    expect(berth).toBeNull();
   });
 });
 
