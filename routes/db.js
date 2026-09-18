@@ -16,7 +16,14 @@ const BERTH_SEED = [
   { id: 'B3', name: 'East Pier 1', lengthM: 60, depthM: 5.5, outOfService: false },
   { id: 'B4', name: 'East Pier 2', lengthM: 45, depthM: 4.0, outOfService: false },
   { id: 'B5', name: 'Deepwater Terminal', lengthM: 180, depthM: 12.0, outOfService: false },
-  { id: 'B6', name: "Fisherman's Wharf", lengthM: 30, depthM: 3.5, outOfService: false },
+  {
+    id: 'B6',
+    name: "Fisherman's Wharf",
+    lengthM: 30,
+    depthM: 3.5,
+    outOfService: false,
+    rafting: { enabled: true, maxVessels: 2, maxLengthM: 20 },
+  },
 ];
 
 /** Semidiurnal tide period (M2 constituent), in hours. */

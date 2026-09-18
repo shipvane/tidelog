@@ -2,16 +2,19 @@
 
 const express = require('express');
 
-const { occupantAt } = require('../lib/berths');
+const { occupantsAt } = require('../lib/berths');
 const db = require('./db');
 
 const router = express.Router();
 
 function berthView(berth, at) {
-  const occupant = occupantAt(db.state.assignments, berth.id, at);
+  const occupants = occupantsAt(db.state.assignments, berth.id, at);
+  const occupied = occupants.length > 0;
+  const occupant = occupants.length > 0 ? occupants[0] : null;
+
   return {
     ...berth,
-    occupied: occupant !== null,
+    occupied,
     occupant: occupant
       ? {
           arrivalId: occupant.arrivalId,
@@ -20,10 +23,17 @@ function berthView(berth, at) {
           to: occupant.to,
         }
       : null,
+    // Include all occupants for rafting support
+    occupants: occupants.map((o) => ({
+      arrivalId: o.arrivalId,
+      vesselName: o.vesselName,
+      from: o.from,
+      to: o.to,
+    })),
   };
 }
 
-/** Berth board: every berth with its current occupant (if any). */
+/** Berth board: every berth with its current occupant(s) (if any). */
 router.get('/', (req, res) => {
   const at = new Date().toISOString();
   res.json({ berths: db.state.berths.map((berth) => berthView(berth, at)) });
