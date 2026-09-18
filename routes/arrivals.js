@@ -6,6 +6,7 @@ const { normalizeManifest, VESSEL_TYPES } = require('../lib/manifest');
 const { findBerth } = require('../lib/berths');
 const { arrivalsToCsv } = require('../lib/csv');
 const { fireEvent } = require('../lib/webhooks');
+const { OVERDUE_THRESHOLD_HOURS } = require('../lib/constants');
 const db = require('./db');
 
 const router = express.Router();
@@ -16,10 +17,25 @@ function assignmentFor(arrivalId) {
   return db.state.assignments.find((a) => a.arrivalId === arrivalId) || null;
 }
 
+/**
+ * Calculate whether an arrival is overdue: still expected and past ETA + threshold.
+ */
+function isOverdue(arrival) {
+  if (arrival.status !== 'expected') {
+    return false;
+  }
+  const etaMillis = new Date(arrival.eta).getTime();
+  const thresholdMillis = OVERDUE_THRESHOLD_HOURS * 3600_000;
+  const overdueAtMillis = etaMillis + thresholdMillis;
+  const nowMillis = Date.now();
+  return nowMillis > overdueAtMillis;
+}
+
 function withBerth(arrival) {
   const assignment = assignmentFor(arrival.id);
   return {
     ...arrival,
+    overdue: isOverdue(arrival),
     berth: assignment
       ? { berthId: assignment.berthId, from: assignment.from, to: assignment.to }
       : null,
@@ -32,7 +48,13 @@ router.get('/', (req, res) => {
   let arrivals = [...db.state.arrivals.values()];
 
   if (req.query.status) {
-    arrivals = arrivals.filter((a) => a.status === req.query.status);
+    const status = req.query.status;
+    if (status === 'overdue') {
+      // Special case: filter for expected arrivals that are past the threshold
+      arrivals = arrivals.filter((a) => isOverdue(a));
+    } else {
+      arrivals = arrivals.filter((a) => a.status === status);
+    }
   }
 
   if (req.query.type) {

@@ -443,3 +443,112 @@ describe('GET /api/arrivals/export.csv', () => {
     expect(res.text.replace(/\r\n/g, '')).not.toContain('\n');
   });
 });
+
+describe('overdue vessel flagging', () => {
+  test('GET returns overdue flag based on current time vs ETA + threshold', async () => {
+    // Create an arrival with ETA 3 hours in the past (more than 2-hour threshold)
+    const pastEta = new Date(Date.now() - 3 * 3600_000).toISOString();
+    const { body } = await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ eta: pastEta }));
+
+    const res = await request(app).get(`/api/arrivals/${body.arrival.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.arrival.status).toBe('expected');
+    expect(res.body.arrival.overdue).toBe(true);
+  });
+
+  test('GET returns overdue=false for recent expected arrivals', async () => {
+    // Create an arrival with ETA 1 hour in the past (less than 2-hour threshold)
+    const recentEta = new Date(Date.now() - 1 * 3600_000).toISOString();
+    const { body } = await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ eta: recentEta }));
+
+    const res = await request(app).get(`/api/arrivals/${body.arrival.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.arrival.status).toBe('expected');
+    expect(res.body.arrival.overdue).toBe(false);
+  });
+
+  test('GET returns overdue=false for arrived vessels regardless of ETA', async () => {
+    // Create an arrival with ETA 3 hours in the past
+    const pastEta = new Date(Date.now() - 3 * 3600_000).toISOString();
+    const { body } = await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ eta: pastEta }));
+
+    // Mark it as arrived
+    await request(app).post(`/api/arrivals/${body.arrival.id}/arrive`).send({});
+
+    const res = await request(app).get(`/api/arrivals/${body.arrival.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.arrival.status).toBe('arrived');
+    expect(res.body.arrival.overdue).toBe(false);
+  });
+
+  test('GET ?status=overdue filters for expected vessels past threshold', async () => {
+    // Create an overdue vessel (ETA 3 hours in the past)
+    const pastEta = new Date(Date.now() - 3 * 3600_000).toISOString();
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Overdue Vessel', eta: pastEta }));
+
+    // Create a non-overdue expected vessel (ETA 1 hour in the past)
+    const recentEta = new Date(Date.now() - 1 * 3600_000).toISOString();
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'On Time Vessel', eta: recentEta }));
+
+    // Create an arrived vessel (should not appear in overdue filter)
+    const { body: arrivedBody } = await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Arrived Vessel', eta: pastEta }));
+    await request(app).post(`/api/arrivals/${arrivedBody.arrival.id}/arrive`).send({});
+
+    const res = await request(app).get('/api/arrivals?status=overdue');
+    expect(res.status).toBe(200);
+    expect(res.body.arrivals).toHaveLength(1);
+    expect(res.body.arrivals[0].vesselName).toBe('Overdue Vessel');
+    expect(res.body.arrivals[0].overdue).toBe(true);
+  });
+
+  test('GET ?status=overdue and ?type= can be combined', async () => {
+    // Create an overdue cargo vessel
+    const pastEta = new Date(Date.now() - 3 * 3600_000).toISOString();
+    await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Overdue Cargo', vesselType: 'cargo', eta: pastEta }));
+
+    // Create an overdue fishing vessel
+    await request(app)
+      .post('/api/arrivals')
+      .send(
+        validManifest({
+          vesselName: 'Overdue Fishing',
+          vesselType: 'fishing',
+          imo: undefined,
+          eta: pastEta,
+        })
+      );
+
+    // Create an overdue tanker
+    await request(app)
+      .post('/api/arrivals')
+      .send(
+        validManifest({
+          vesselName: 'Overdue Tanker',
+          vesselType: 'tanker',
+          imo: undefined,
+          eta: pastEta,
+        })
+      );
+
+    // Filter for overdue tankers
+    const res = await request(app).get('/api/arrivals?status=overdue&type=tanker');
+    expect(res.status).toBe(200);
+    expect(res.body.arrivals).toHaveLength(1);
+    expect(res.body.arrivals[0].vesselName).toBe('Overdue Tanker');
+    expect(res.body.arrivals[0].vesselType).toBe('tanker');
+  });
+});
