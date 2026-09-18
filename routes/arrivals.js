@@ -7,6 +7,7 @@ const { findBerth } = require('../lib/berths');
 const { arrivalsToCsv } = require('../lib/csv');
 const { fireEvent } = require('../lib/webhooks');
 const { OVERDUE_THRESHOLD_HOURS } = require('../lib/constants');
+const { calculateDues, DEFAULT_RATE_PER_METER_HOUR } = require('../lib/dues');
 const db = require('./db');
 
 const router = express.Router();
@@ -246,6 +247,51 @@ router.post('/:id/assign-berth', (req, res) => {
   });
 
   return res.json({ assignment, berth });
+});
+
+/**
+ * Calculate harbor dues for a vessel's berth assignment.
+ * Returns a charge breakdown from the berth window and vessel length.
+ * Optionally accepts a custom rate via query parameter.
+ * Returns 404 if arrival not found, 409 if no berth is assigned.
+ */
+router.get('/:id/dues', (req, res) => {
+  const arrival = db.state.arrivals.get(req.params.id);
+  if (!arrival) {
+    return res.status(404).json({ error: 'arrival not found' });
+  }
+
+  const assignment = assignmentFor(arrival.id);
+  if (!assignment) {
+    return res.status(409).json({ error: 'vessel has no berth assignment' });
+  }
+
+  let rate = DEFAULT_RATE_PER_METER_HOUR;
+  if (req.query.rate !== undefined) {
+    const parsedRate = Number(req.query.rate);
+    if (!Number.isFinite(parsedRate) || parsedRate < 0) {
+      return res.status(400).json({ error: 'rate must be a non-negative number' });
+    }
+    rate = parsedRate;
+  }
+
+  try {
+    const charge = calculateDues({
+      lengthM: arrival.lengthM,
+      from: assignment.from,
+      to: assignment.to,
+      rate,
+    });
+
+    return res.json({
+      arrivalId: arrival.id,
+      vesselName: arrival.vesselName,
+      berthId: assignment.berthId,
+      charge,
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 });
 
 module.exports = router;

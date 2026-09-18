@@ -244,6 +244,108 @@ describe('POST /api/arrivals/:id/assign-berth', () => {
   });
 });
 
+describe('GET /api/arrivals/:id/dues', () => {
+  test('calculates harbor dues for a vessel with berth assignment', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/assign-berth`)
+      .send({ from: '2026-03-01T14:00:00Z', to: '2026-03-01T18:00:00Z' });
+
+    const res = await request(app).get(`/api/arrivals/${body.arrival.id}/dues`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      arrivalId: body.arrival.id,
+      vesselName: 'MV Northern Star',
+      berthId: 'B1',
+    });
+    expect(res.body.charge).toMatchObject({
+      lengthM: 85,
+      hoursAlongside: 4,
+      ratePerMeterHour: 10,
+      totalChargeCurrency: 85 * 4 * 10,
+      breakdown: expect.any(String),
+    });
+  });
+
+  test('accepts a custom rate via query parameter', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/assign-berth`)
+      .send({ from: '2026-03-01T14:00:00Z', to: '2026-03-01T16:00:00Z' });
+
+    const res = await request(app).get(`/api/arrivals/${body.arrival.id}/dues?rate=25`);
+    expect(res.status).toBe(200);
+    expect(res.body.charge.ratePerMeterHour).toBe(25);
+    expect(res.body.charge.totalChargeCurrency).toBe(85 * 2 * 25);
+  });
+
+  test('404s for unknown arrival', async () => {
+    const res = await request(app).get('/api/arrivals/ARR-999/dues');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('arrival not found');
+  });
+
+  test('409s when vessel has no berth assignment', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    const res = await request(app).get(`/api/arrivals/${body.arrival.id}/dues`);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('vessel has no berth assignment');
+  });
+
+  test('400s when rate query parameter is invalid', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/assign-berth`)
+      .send({ from: '2026-03-01T14:00:00Z', to: '2026-03-01T18:00:00Z' });
+
+    const invalidRate = await request(app).get(`/api/arrivals/${body.arrival.id}/dues?rate=abc`);
+    expect(invalidRate.status).toBe(400);
+    expect(invalidRate.body.error).toContain('rate must be a non-negative number');
+
+    const negativeRate = await request(app).get(`/api/arrivals/${body.arrival.id}/dues?rate=-5`);
+    expect(negativeRate.status).toBe(400);
+  });
+
+  test('handles fractional hours alongside correctly', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    // 2.5 hours: from 14:00 to 16:30
+    await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/assign-berth`)
+      .send({ from: '2026-03-01T14:00:00Z', to: '2026-03-01T16:30:00Z' });
+
+    const res = await request(app).get(`/api/arrivals/${body.arrival.id}/dues`);
+    expect(res.status).toBe(200);
+    expect(res.body.charge.hoursAlongside).toBe(2.5);
+    expect(res.body.charge.totalChargeCurrency).toBe(85 * 2.5 * 10);
+  });
+
+  test('breakdown string shows calculation', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/assign-berth`)
+      .send({ from: '2026-03-01T14:00:00Z', to: '2026-03-01T16:00:00Z' });
+
+    const res = await request(app).get(`/api/arrivals/${body.arrival.id}/dues`);
+    expect(res.status).toBe(200);
+    // Should show: "85m × 2h × 10 = 1700"
+    expect(res.body.charge.breakdown).toContain('85m');
+    expect(res.body.charge.breakdown).toContain('2h');
+    expect(res.body.charge.breakdown).toContain('1700');
+  });
+
+  test('uses zero rate when provided', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    await request(app)
+      .post(`/api/arrivals/${body.arrival.id}/assign-berth`)
+      .send({ from: '2026-03-01T14:00:00Z', to: '2026-03-01T18:00:00Z' });
+
+    const res = await request(app).get(`/api/arrivals/${body.arrival.id}/dues?rate=0`);
+    expect(res.status).toBe(200);
+    expect(res.body.charge.ratePerMeterHour).toBe(0);
+    expect(res.body.charge.totalChargeCurrency).toBe(0);
+  });
+});
+
 describe('/api/berths', () => {
   test('GET lists the berth board with occupancy flags', async () => {
     const res = await request(app).get('/api/berths');
