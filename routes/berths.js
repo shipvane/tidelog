@@ -41,4 +41,29 @@ router.get('/:id/schedule', (req, res) => {
   return res.json({ berth, schedule });
 });
 
+/**
+ * Toggle a berth's maintenance mode (outOfService flag).
+ * POST body optionally includes `reason` for the maintenance.
+ * Returns the updated berth.
+ */
+router.post('/:id/maintenance', (req, res) => {
+  const berth = db.state.berths.find((b) => b.id === req.params.id);
+  if (!berth) {
+    return res.status(404).json({ error: 'berth not found' });
+  }
+
+  // Toggle the outOfService flag
+  berth.outOfService = !berth.outOfService;
+
+  // Optionally store the reason if toggling into maintenance
+  if (berth.outOfService && req.body && req.body.reason) {
+    berth.maintenanceReason = req.body.reason;
+  } else if (!berth.outOfService) {
+    // Clear the reason when exiting maintenance
+    delete berth.maintenanceReason;
+  }
+
+  return res.json({ berth });
+});
+
 module.exports = router;
