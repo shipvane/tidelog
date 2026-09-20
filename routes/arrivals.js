@@ -32,11 +32,29 @@ function isOverdue(arrival) {
   return nowMillis > overdueAtMillis;
 }
 
+/**
+ * Calculate turnaround hours for an arrival: time from arrival to departure.
+ * Returns null if the vessel has not both arrived and departed.
+ */
+function calculateTurnaroundHours(arrival) {
+  if (!arrival.arrivedAt || !arrival.departedAt) {
+    return null;
+  }
+  const arrivedMillis = new Date(arrival.arrivedAt).getTime();
+  const departedMillis = new Date(arrival.departedAt).getTime();
+  if (!Number.isFinite(arrivedMillis) || !Number.isFinite(departedMillis)) {
+    return null;
+  }
+  const turnaroundMillis = departedMillis - arrivedMillis;
+  return turnaroundMillis / (3600 * 1000);
+}
+
 function withBerth(arrival) {
   const assignment = assignmentFor(arrival.id);
   return {
     ...arrival,
     overdue: isOverdue(arrival),
+    turnaroundHours: calculateTurnaroundHours(arrival),
     berth: assignment
       ? { berthId: assignment.berthId, from: assignment.from, to: assignment.to }
       : null,

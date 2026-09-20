@@ -8,6 +8,7 @@ const arrivalsRouter = require('./routes/arrivals');
 const berthsRouter = require('./routes/berths');
 const tidesRouter = require('./routes/tides');
 const webhooksRouter = require('./routes/webhooks');
+const statsRouter = require('./routes/stats');
 const db = require('./routes/db');
 
 const app = express();
@@ -50,6 +51,7 @@ app.use('/api/arrivals', arrivalsRouter);
 app.use('/api/berths', berthsRouter);
 app.use('/api/tides', tidesRouter);
 app.use('/api/webhooks', webhooksRouter);
+app.use('/api/stats', statsRouter);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
