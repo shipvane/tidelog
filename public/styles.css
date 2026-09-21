@@ -182,7 +182,6 @@ body {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  overflow: hidden;
 }
 
 .panel-head {
@@ -240,6 +239,7 @@ body {
 
 .table-wrap {
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 table {
@@ -389,6 +389,7 @@ td .imo {
   list-style: none;
   margin: 0;
   padding: 0.5rem 0;
+  overflow: hidden;
 }
 
 .berth {
@@ -460,6 +461,7 @@ td .imo {
   flex-wrap: wrap;
   gap: 0.6rem;
   padding: 1rem 1.1rem;
+  overflow: hidden;
 }
 
 .window-chip {
