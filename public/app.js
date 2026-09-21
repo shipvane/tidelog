@@ -285,3 +285,14 @@ tickClock();
 setInterval(tickClock, 1000);
 refresh();
 setInterval(refresh, REFRESH_MS);
+
+/**
+ * Register the service worker if available.
+ * The SW handles offline app shell caching with no build step.
+ */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('SW registration failed:', err);
+  });
+}
