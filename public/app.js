@@ -174,7 +174,7 @@ function renderArrivals(arrivals, berths) {
   if (arrivals.length === 0) {
     const row = el('tr');
     const cell = el('td', 'empty', 'No arrivals logged yet.');
-    cell.colSpan = 8;
+    cell.colSpan = 7;
     row.appendChild(cell);
     body.appendChild(row);
     return;
@@ -199,8 +199,6 @@ function renderArrivals(arrivals, berths) {
     const status = el('td');
     status.appendChild(el('span', `pill pill-${arrival.status}`, arrival.status));
     row.appendChild(status);
-
-    row.appendChild(el('td', null, arrival.berth ? arrival.berth.berthId : '—'));
 
     // Add Assign button cell
     const actionCell = el('td');
