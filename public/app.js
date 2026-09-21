@@ -31,14 +31,150 @@ async function fetchJson(url) {
   return res.json();
 }
 
-function renderArrivals(arrivals) {
+/**
+ * Filter berths to only those that are compatible with a vessel's
+ * length and draft, and are not out of service.
+ */
+function filterCompatibleBerths(berths, vessel) {
+  return berths.filter((berth) => {
+    // Exclude out-of-service berths
+    if (berth.outOfService) {
+      return false;
+    }
+    // Check physical compatibility: LOA and draft
+    if (vessel.lengthM > berth.lengthM) {
+      return false; // Vessel too long for berth
+    }
+    if (vessel.draftM > berth.depthM) {
+      return false; // Vessel draft exceeds berth depth
+    }
+    return true;
+  });
+}
+
+/**
+ * Open the assign berth modal for a vessel.
+ * Fetches compatible berths and displays them for selection.
+ */
+async function openAssignModal(arrival, allBerths) {
+  const modal = document.getElementById('assign-modal');
+  let selectedBerthId = null;
+
+  // Filter berths for physical compatibility
+  const compatibleBerths = filterCompatibleBerths(allBerths, {
+    lengthM: arrival.lengthM,
+    draftM: arrival.draftM,
+  });
+
+  // Render vessel info
+  const vesselInfo = document.getElementById('modal-vessel-info');
+  vesselInfo.replaceChildren();
+  const infoRow = el('div');
+  infoRow.className = 'vessel-info-row';
+  infoRow.appendChild(el('span', 'vessel-info-label', 'Vessel:'));
+  infoRow.appendChild(el('span', 'vessel-info-value', arrival.vesselName));
+  vesselInfo.appendChild(infoRow);
+
+  const loaRow = el('div');
+  loaRow.className = 'vessel-info-row';
+  loaRow.appendChild(el('span', 'vessel-info-label', 'LOA / Draft:'));
+  loaRow.appendChild(el('span', 'vessel-info-value', `${arrival.lengthM} m / ${arrival.draftM} m`));
+  vesselInfo.appendChild(loaRow);
+
+  // Render berth options or "no berths" message
+  const berthsList = document.getElementById('modal-berths-list');
+  const noBerths = document.getElementById('modal-no-berths');
+  const confirmBtn = document.getElementById('modal-confirm');
+
+  berthsList.replaceChildren();
+  selectedBerthId = null;
+  confirmBtn.disabled = true;
+
+  if (compatibleBerths.length === 0) {
+    noBerths.hidden = false;
+    berthsList.hidden = true;
+  } else {
+    noBerths.hidden = true;
+    berthsList.hidden = false;
+
+    for (const berth of compatibleBerths) {
+      const label = el('label', 'berth-option');
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'berth-selection';
+      radio.value = berth.id;
+      radio.addEventListener('change', () => {
+        selectedBerthId = berth.id;
+        confirmBtn.disabled = false;
+      });
+      label.appendChild(radio);
+
+      const info = el('div', 'berth-option-info');
+      const name = el('div', 'berth-option-name', `${berth.id} · ${berth.name}`);
+      info.appendChild(name);
+      const specs = el(
+        'div',
+        'berth-option-specs',
+        `${berth.lengthM} m LOA · ${berth.depthM} m depth`
+      );
+      info.appendChild(specs);
+      label.appendChild(info);
+
+      berthsList.appendChild(label);
+    }
+  }
+
+  // Set up modal actions
+  const cancelBtn = document.getElementById('modal-cancel');
+  const closeBtn = document.getElementById('modal-close');
+
+  // Cancel handlers
+  const handleCancel = () => {
+    modal.hidden = true;
+    selectedBerthId = null;
+    confirmBtn.disabled = true;
+  };
+
+  cancelBtn.onclick = handleCancel;
+  closeBtn.onclick = handleCancel;
+
+  // Confirm handler
+  confirmBtn.onclick = async () => {
+    if (!selectedBerthId) return;
+
+    try {
+      const res = await fetch(`/api/arrivals/${arrival.id}/assign-berth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: arrival.eta,
+          to: new Date(new Date(arrival.eta).getTime() + 8 * 3600_000).toISOString(),
+        }),
+      });
+
+      if (res.ok) {
+        handleCancel();
+        await refresh(); // Refresh the entire page to show the updated assignment
+      } else {
+        alert(`Failed to assign berth: ${res.status} ${res.statusText}`);
+      }
+    } catch (err) {
+      alert(`Error assigning berth: ${err.message}`);
+    }
+  };
+
+  // Show modal
+  modal.hidden = false;
+}
+
+function renderArrivals(arrivals, berths) {
   const body = document.getElementById('arrivals-body');
   body.replaceChildren();
 
   if (arrivals.length === 0) {
     const row = el('tr');
     const cell = el('td', 'empty', 'No arrivals logged yet.');
-    cell.colSpan = 7;
+    cell.colSpan = 8;
     row.appendChild(cell);
     body.appendChild(row);
     return;
@@ -65,6 +201,17 @@ function renderArrivals(arrivals) {
     row.appendChild(status);
 
     row.appendChild(el('td', null, arrival.berth ? arrival.berth.berthId : '—'));
+
+    // Add Assign button cell
+    const actionCell = el('td');
+    if (!arrival.berth && arrival.status === 'expected') {
+      const btn = el('button', 'btn-assign', 'Assign');
+      btn.type = 'button';
+      btn.addEventListener('click', () => openAssignModal(arrival, berths));
+      actionCell.appendChild(btn);
+    }
+    row.appendChild(actionCell);
+
     body.appendChild(row);
   }
 
@@ -254,7 +401,7 @@ async function refresh() {
       fetchJson(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
 
-    renderArrivals(arrivalsRes.arrivals);
+    renderArrivals(arrivalsRes.arrivals, berthsRes.berths);
     renderBerths(berthsRes.berths);
     renderWindows(windowsRes.windows);
 
