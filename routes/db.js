@@ -178,6 +178,30 @@ function seedDemoData() {
     status: 'expected',
     loggedAt: hoursFromNow(-1),
   });
+
+  // Seed a notification for a berth change. Tarn Voyager was initially assigned to B2,
+  // and the harbor master just reassigned it to B1 to optimize the schedule.
+  // This demonstrates the berth change notification feature.
+  const webhookId = ++state.nextWebhookId;
+  state.subscriptions.push({
+    id: `WH-${String(webhookId).padStart(4, '0')}`,
+    vesselName: 'Tarn Voyager',
+    url: 'https://agent.meridian.example/webhooks/berth-changes',
+    createdAt: hoursFromNow(-0.5),
+  });
+
+  state.deliveryLog.push({
+    id: `DLV-${Date.now()}-seed1`,
+    subscriptionId: `WH-${String(webhookId).padStart(4, '0')}`,
+    vesselName: 'Tarn Voyager',
+    url: 'https://agent.meridian.example/webhooks/berth-changes',
+    eventType: 'berth_assigned',
+    attemptedAt: hoursFromNow(-0.25),
+    ok: true,
+    httpStatus: 200,
+    error: null,
+    retried: false,
+  });
 }
 
 reset();
