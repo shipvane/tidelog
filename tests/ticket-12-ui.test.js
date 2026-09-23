@@ -10,7 +10,8 @@
 
 const request = require('supertest');
 const { JSDOM } = require('jsdom');
-const app = require('../server');
+const { boundServer } = require('./support/server');
+const app = boundServer(require('../server'));
 const db = require('../routes/db');
 
 beforeEach(() => {
