@@ -84,7 +84,7 @@
                   <th>Draft</th>
                   <th>ETA</th>
                   <th>Status</th>
-                  <th>Berth</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody id="arrivals-body">
@@ -144,6 +144,30 @@
     <footer class="footer">
       <p>TideLog v0.1 · harbor operations logbook · times shown in your local timezone</p>
     </footer>
+
+    <!-- Assign berth modal -->
+    <div id="assign-modal" class="modal" hidden>
+      <div class="modal-overlay"></div>
+      <dialog class="modal-dialog" open>
+        <div class="modal-head">
+          <h3 id="modal-title">Assign Berth</h3>
+          <button type="button" class="modal-close" id="modal-close" aria-label="Close dialog">
+            ✕
+          </button>
+        </div>
+        <div class="modal-body">
+          <div id="modal-vessel-info" class="vessel-info"></div>
+          <div id="modal-berths-list" class="berths-list"></div>
+          <div id="modal-no-berths" class="empty" hidden>No compatible berths available</div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-secondary" id="modal-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="modal-confirm" disabled>
+            Confirm Assignment
+          </button>
+        </div>
+      </dialog>
+    </div>
 
     <script src="app.js"></script>
   </body>
