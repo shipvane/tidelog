@@ -3,11 +3,24 @@
 /**
  * Tests for ticket 12 behavior: verify that berth changes (reassignments)
  * trigger berth_assigned notifications to agents.
+ *
+ * Delivery is async and fire-and-forget: the route responds before the POST
+ * settles, and the POST is a real outbound `fetch` to a `.example` host that
+ * cannot resolve. The old version slept a fixed 100ms and then indexed the
+ * delivery log unguarded, giving a 10s request budget 100ms and throwing
+ * `TypeError: Cannot read properties of undefined` when it lost the race.
+ *
+ * The fix: stub the transport (`setTransport`) so the suite makes no network
+ * call at all, and poll the delivery log against a deadline instead of
+ * sleeping. To prove the suite is immune to the CI failure, the global `fetch`
+ * is replaced with one that never settles — the exact "outbound request hangs"
+ * condition — and `afterEach` asserts it was never called.
  */
 
 const request = require('supertest');
 const app = require('../server');
 const db = require('../routes/db');
+const { setTransport } = require('../lib/webhooks');
 
 function validManifest(overrides = {}) {
   return {
@@ -21,8 +34,51 @@ function validManifest(overrides = {}) {
   };
 }
 
+/**
+ * Poll the delivery log until at least `minCount` entries match, or a deadline
+ * passes. Returns the entries seen on the last read (never throws on empty), so
+ * callers assert on `.length` for a readable failure instead of a `TypeError`.
+ */
+async function waitForDeliveries(query = '', minCount = 1, deadlineMs = 2000) {
+  const deadline = Date.now() + deadlineMs;
+  let deliveries = [];
+  for (;;) {
+    const res = await request(app).get(`/api/webhooks/deliveries${query}`);
+    deliveries = res.body.deliveries;
+    if (deliveries.length >= minCount || Date.now() >= deadline) {
+      return deliveries;
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+let realFetch;
+let hangingFetch;
+
+beforeAll(() => {
+  realFetch = global.fetch;
+  // Reproduce the CI condition exactly: a real outbound request that never
+  // settles. If any code path reaches the network, the awaiting test times out.
+  hangingFetch = jest.fn(() => new Promise(() => {}));
+  global.fetch = hangingFetch;
+});
+
+afterAll(() => {
+  global.fetch = realFetch;
+  setTransport(); // restore the default global-fetch transport
+});
+
 beforeEach(() => {
   db.reset();
+  hangingFetch.mockClear();
+  // Deliver through an in-memory transport so the suite makes zero network calls
+  // and no 5s retry timer is ever armed.
+  setTransport(async () => ({ ok: true, status: 200 }));
+});
+
+afterEach(() => {
+  // No test in this suite may perform a real outbound request.
+  expect(hangingFetch).not.toHaveBeenCalled();
 });
 
 describe('Ticket 12: Berth change detection and notification', () => {
@@ -43,14 +99,12 @@ describe('Ticket 12: Berth change detection and notification', () => {
       to: '2026-03-01T22:00:00Z',
     });
 
-    // Wait for async delivery
-    await new Promise((r) => setTimeout(r, 100));
-
-    // Check delivery log
-    const logRes = await request(app).get(
-      '/api/webhooks/deliveries?vesselName=MV%20Northern%20Star&eventType=berth_assigned'
+    // Wait for async delivery to land in the log
+    const deliveries = await waitForDeliveries(
+      '?vesselName=MV%20Northern%20Star&eventType=berth_assigned',
+      1
     );
-    expect(logRes.body.deliveries.length).toBeGreaterThanOrEqual(1);
+    expect(deliveries.length).toBeGreaterThanOrEqual(1);
   });
 
   test('berth reassignment fires another berth_assigned event', async () => {
@@ -73,7 +127,7 @@ describe('Ticket 12: Berth change detection and notification', () => {
 
     expect(firstAssignRes.status).toBe(200);
 
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForDeliveries('?vesselName=MV%20Northern%20Star&eventType=berth_assigned', 1);
 
     // Reassign to a different berth (different time window to force different berth)
     const secondAssignRes = await request(app)
@@ -85,14 +139,13 @@ describe('Ticket 12: Berth change detection and notification', () => {
 
     expect(secondAssignRes.status).toBe(200);
 
-    await new Promise((r) => setTimeout(r, 100));
-
     // Check that berth_assigned events were fired
-    const logRes = await request(app).get(
-      '/api/webhooks/deliveries?vesselName=MV%20Northern%20Star&eventType=berth_assigned'
-    );
     // Should have at least 2 attempts (initial + reassignment, plus potential retries)
-    expect(logRes.body.deliveries.length).toBeGreaterThanOrEqual(2);
+    const deliveries = await waitForDeliveries(
+      '?vesselName=MV%20Northern%20Star&eventType=berth_assigned',
+      2
+    );
+    expect(deliveries.length).toBeGreaterThanOrEqual(2);
   });
 
   test('berth change includes the vessel name (for agent identification)', async () => {
@@ -111,10 +164,9 @@ describe('Ticket 12: Berth change detection and notification', () => {
       to: '2026-03-01T22:00:00Z',
     });
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    const logRes = await request(app).get('/api/webhooks/deliveries');
-    const entry = logRes.body.deliveries[0];
+    const deliveries = await waitForDeliveries('', 1);
+    expect(deliveries.length).toBeGreaterThanOrEqual(1);
+    const entry = deliveries[0];
 
     expect(entry.vesselName).toBe('MV Northern Star');
   });
@@ -137,10 +189,9 @@ describe('Ticket 12: Berth change detection and notification', () => {
       to: '2026-03-01T22:00:00Z',
     });
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    const logRes = await request(app).get('/api/webhooks/deliveries');
-    const entry = logRes.body.deliveries[0];
+    const deliveries = await waitForDeliveries('', 1);
+    expect(deliveries.length).toBeGreaterThanOrEqual(1);
+    const entry = deliveries[0];
 
     expect(entry.url).toBe(url);
   });

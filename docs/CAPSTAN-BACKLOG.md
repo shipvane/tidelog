@@ -38,7 +38,8 @@ a human decision. Keep it that way.
 
 ### Test reliability
 
-- [ ] Webhook delivery tests race a real network call with a 100ms sleep — tracked as **SVE-151**
+- [x] Webhook delivery tests race a real network call with a 100ms sleep — tracked as **SVE-151**
+  - Done: transport seam in `lib/webhooks.js` + stubbed transport and deadline polling in the webhook tests. PR: capstan/webhook-test-transport-seam.
   - **This is first because it breaks unrelated PRs.** It failed CI on a docs-only change (#46) that could not possibly affect tests, and it is on `main` now, so it will keep tripping at random until fixed. A red gate that is nobody's fault trains everyone to re-run rather than read.
   - Mechanism: `tests/ticket-12-berth-change.test.js:140` sleeps `setTimeout(r, 100)` and then reads `logRes.body.deliveries[0]` unguarded. The delivery is a **real outbound `fetch()`** (`lib/webhooks.js:32`) to `https://meridian-shipping.example/...`, a domain that cannot resolve — `.example` is reserved by RFC 2606 — and nothing is written to the delivery log until that attempt settles. `REQUEST_TIMEOUT_MS` is **10_000** and `RETRY_DELAY_MS` is **5_000** (`lib/webhooks.js:18-19`). The test therefore gives a 10-second budget 100 milliseconds, then indexes `[0]` on an empty array and throws `TypeError: Cannot read properties of undefined (reading 'url')`.
   - It usually passes only because failing fast is fast. A CI runner with slower DNS, or one where outbound hangs instead of refusing, loses the race. The same run also reports `A worker process has failed to exit gracefully` — that is the pending 5s retry timer outliving the test, same root cause.
