@@ -38,6 +38,16 @@ a human decision. Keep it that way.
 
 ### Test reliability
 
+- [ ] The jest suite flakes at ~13% on main, in tests unrelated to any one change (SVE-153)
+  - **This is first because it fails PRs that cannot have caused it.** A docs-only PR adding `CLAUDE.md` (#46) went red on it. So did the PR that fixed the webhook race. A gate that goes red for reasons nobody caused teaches everyone to re-run instead of read, and that habit is what let the jsdom defect ship twice (SVE-145 -> SVE-146).
+  - **Measured, not inferred.** Full-suite runs on a quiet machine, 2026-09-23: `main` failed **2 of 15** (13%); the SVE-151 branch failed **2 of 12** (17%). SVE-151 removed the webhook-specific failures — across 26 runs on that branch none were webhook-related — and this is what remains.
+  - Tests seen failing, each on `main` or on a branch that does not touch them: `assign-berth › avoids double-booking: second vessel gets the next berth up`; `berths › POST /:id/maintenance toggles the outOfService flag`; `depart › allows departure from overdue status`; `GET /api/webhooks/deliveries › entries appear newest first`. In at least one case `res.body` did not carry the key the route always returns, which points at the request rather than the handler.
+  - **Run `npx jest --runInBand` repeatedly before anything else.** If the flake disappears in band it is a concurrency problem, not a logic one, and that single experiment decides the whole shape of the fix. Put the result in the PR. These are express + supertest route tests sharing one in-memory store (`routes/db.js`) reset by a synchronous `db.reset()` in `beforeEach`, while jest runs suites in parallel workers — so the candidates are cross-test state from fire-and-forget work still in flight, supertest's ephemeral port binding under load, or worker parallelism itself.
+  - **Do not "fix" this by retrying tests, raising timeouts, or skipping anything.** Each hides the signal and leaves the bug. Do not reach for `--runInBand` as the _fix_ either unless you can show the suite stays fast enough to keep as the gate — as a diagnostic it is free, as a permanent setting it has a cost worth stating.
+  - **Expect your own gate to flake while you work this item.** At ~13% a red run is more likely noise than something you broke. Re-run before concluding your change caused it, and say in the PR how many runs you did — this is the one item where a single green gate proves the least.
+  - **Acceptance: state the measured rate before and after, over at least 15 full runs each, naming the number of runs you did.** "It passes now" is not a result — a 13% flake passes most of the time by definition.
+  - **Question to answer in the PR:** did it disappear under `--runInBand`, and what does that tell you about the cause? If it did not, what did you rule out?
+
 - [x] No test may make a real outbound network request — seven files race the webhook delivery (SVE-151)
   - Done in [#49](https://github.com/shipvane/tidelog/pull/49): `lib/webhooks.js` gains a transport seam (default byte-for-byte `fetch`); `tests/setup/no-network.js` (jest `setupFilesAfterEnv`) installs a never-settling `global.fetch` + a guard that fails any test making a real call, and injects a local transport so deliveries log with no network; fixed sleeps replaced with deadline polling. Guard trips on a deliberate real call; worker-exit warning gone.
   - **This is first because it breaks unrelated PRs.** It failed CI on a docs-only change (#46) that could not possibly affect tests. A red gate that is nobody's fault trains everyone to re-run rather than read.
@@ -57,7 +67,8 @@ a human decision. Keep it that way.
      offline data layer depends on the service worker.
      Tracked as SVD-11/12/13. -->
 
-- [ ] PWA (1/3): installable shell — manifest, real icons, iOS meta tags — tracked as **SVD-11**
+- [x] PWA (1/3): installable shell — manifest, real icons, iOS meta tags — tracked as **SVD-11**
+  - Done via the agentic harness's PR **#38** (`31ab219`), not a capstan branch — which is why this box stayed unticked after it merged. Verified live: `/manifest.webmanifest` and all four icon paths return 200 on tidelog.shipvane.com.
   - The safe slice: adds files and markup only, no service worker, so it cannot break the live demo.
   - Today there is no manifest and no icon on disk — `public/index.html` declares an inline SVG data-URI favicon and nothing else.
   - Add `public/manifest.webmanifest` (name, short_name, `start_url: "/"`, `scope: "/"`, `display: "standalone"`), taking `theme_color`/`background_color` from the existing palette in `public/styles.css` rather than inventing them. Link it from `index.html`.
@@ -67,7 +78,7 @@ a human decision. Keep it that way.
   - Tests: a supertest spec asserting `GET /manifest.webmanifest` is 200 with the right content type, **and that every icon path named in the manifest is actually fetchable** — a manifest pointing at a missing icon is the usual way this breaks, and it fails silently in the browser.
 
 - [ ] PWA (2/3): service worker and offline app shell — tracked as **SVD-12**
-  - BLOCKED until SVD-11 lands (the SW precaches the manifest and icons).
+  - **IN FLIGHT — do not pick this up.** SVD-11 has landed, so the dependency is cleared, but the harness already has this open as PR **#39** (`auto/16-...`). The dispatcher's in-flight check only looks at `capstan/*` branches (SVE-155), so it cannot see that PR and will offer this item as free. It is not. Re-tick to `- [ ]` with this note removed once #39 merges or is closed.
   - **The constraint that shapes this: there is no bundler and no build step.** `package.json` has start/test/lint/format only, and `public/` is served verbatim. There is no Workbox build to generate a hashed precache manifest. Choose explicitly and say why in the PR: (a) hand-written `public/sw.js` with an explicit precache list and a `CACHE_VERSION` bumped when those files change — simple, no new tooling, but the bump is a manual step someone forgets; or (b) add `workbox-cli` and a `build:sw` script, which introduces a build step to a repo that deliberately has none and must then run before deploy (check `apprunner.yaml`). Recommend (a) for a five-file shell.
   - **Treat the service worker as a loaded gun, because this is the public demo.** A registered SW is sticky: a bad one is cached by every visitor and keeps serving itself, so a broken deploy is _not_ fixed by the next deploy. Ship a kill switch from day one and document how to trigger it in the PR. Use `skipWaiting`/`clients.claim` deliberately, not reflexively.
   - **Never cache `/api/*` in this slice.** Harbor data is SVD-13 and has its own correctness questions; a stale berth assignment served silently from cache is worse than an error.
