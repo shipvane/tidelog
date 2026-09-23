@@ -28,12 +28,16 @@ migration story — do not add one without being asked.
 | `public/` | the whole UI: one `index.html`, one `app.js`, one `styles.css`        |
 | `tests/`  | Jest. `supertest` for routes, `jsdom` for markup                      |
 
-**There is no build step and no framework.** `public/` is served as written —
-vanilla JS, hand-authored CSS, no bundler, no JSX, no TypeScript. Do not
-introduce one. If a PWA asset needs a precache list, it is maintained by hand.
+**Express on the server; nothing at all on the client.** `server.js` and
+`routes/` are Express. `public/` is served as written — vanilla browser JS in a
+plain `<script>` tag, hand-authored CSS, **no build step**, no bundler, no JSX,
+no TypeScript. Do not introduce a frontend framework or a build; if a PWA asset
+needs a precache list, it is maintained by hand.
 
-CommonJS throughout (`require`, `module.exports`), `'use strict'` at the top of
-every file, Node >= 20.
+Server code is **CommonJS** (`require`, `module.exports`) with `'use strict'` at
+the top of every file, Node >= 20. `public/app.js` is neither — it is a browser
+script with no module system, so `require` there is a runtime error, not a style
+choice.
 
 ## The gate
 
