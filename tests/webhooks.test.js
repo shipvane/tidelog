@@ -359,9 +359,15 @@ describe('GET /api/webhooks/deliveries', () => {
       retried: false,
     });
 
-    const res = await request(app).get('/api/webhooks/deliveries');
-    expect(res.body.deliveries[0].id).toBe('DLV-SECOND');
-    expect(res.body.deliveries[1].id).toBe('DLV-FIRST');
+    // Poll rather than assume one round-trip returns the expected shape. Both
+    // entries are pushed synchronously above, so this is not waiting on a
+    // delivery — it guards the read itself: a response that is not the usual
+    // `{ deliveries: [...] }` made this fail as
+    // `TypeError: Cannot read properties of undefined (reading '0')`,
+    // which says nothing about ordering, the thing under test.
+    const body = await waitForDeliveries(request, app, { min: 2 });
+    expect(body.deliveries[0].id).toBe('DLV-SECOND');
+    expect(body.deliveries[1].id).toBe('DLV-FIRST');
   });
 
   test('filters by eventType', async () => {
