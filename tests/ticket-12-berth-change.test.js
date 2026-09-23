@@ -8,6 +8,7 @@
 const request = require('supertest');
 const app = require('../server');
 const db = require('../routes/db');
+const { waitForDeliveries } = require('./support/webhook-transport');
 
 function validManifest(overrides = {}) {
   return {
@@ -43,14 +44,11 @@ describe('Ticket 12: Berth change detection and notification', () => {
       to: '2026-03-01T22:00:00Z',
     });
 
-    // Wait for async delivery
-    await new Promise((r) => setTimeout(r, 100));
-
-    // Check delivery log
-    const logRes = await request(app).get(
-      '/api/webhooks/deliveries?vesselName=MV%20Northern%20Star&eventType=berth_assigned'
-    );
-    expect(logRes.body.deliveries.length).toBeGreaterThanOrEqual(1);
+    // Poll for the async delivery rather than sleeping a fixed 100 ms.
+    const body = await waitForDeliveries(request, app, {
+      query: '?vesselName=MV%20Northern%20Star&eventType=berth_assigned',
+    });
+    expect(body.deliveries.length).toBeGreaterThanOrEqual(1);
   });
 
   test('berth reassignment fires another berth_assigned event', async () => {
@@ -73,7 +71,9 @@ describe('Ticket 12: Berth change detection and notification', () => {
 
     expect(firstAssignRes.status).toBe(200);
 
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForDeliveries(request, app, {
+      query: '?vesselName=MV%20Northern%20Star&eventType=berth_assigned',
+    });
 
     // Reassign to a different berth (different time window to force different berth)
     const secondAssignRes = await request(app)
@@ -85,14 +85,12 @@ describe('Ticket 12: Berth change detection and notification', () => {
 
     expect(secondAssignRes.status).toBe(200);
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    // Check that berth_assigned events were fired
-    const logRes = await request(app).get(
-      '/api/webhooks/deliveries?vesselName=MV%20Northern%20Star&eventType=berth_assigned'
-    );
     // Should have at least 2 attempts (initial + reassignment, plus potential retries)
-    expect(logRes.body.deliveries.length).toBeGreaterThanOrEqual(2);
+    const body = await waitForDeliveries(request, app, {
+      query: '?vesselName=MV%20Northern%20Star&eventType=berth_assigned',
+      min: 2,
+    });
+    expect(body.deliveries.length).toBeGreaterThanOrEqual(2);
   });
 
   test('berth change includes the vessel name (for agent identification)', async () => {
@@ -111,10 +109,8 @@ describe('Ticket 12: Berth change detection and notification', () => {
       to: '2026-03-01T22:00:00Z',
     });
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    const logRes = await request(app).get('/api/webhooks/deliveries');
-    const entry = logRes.body.deliveries[0];
+    const body = await waitForDeliveries(request, app);
+    const entry = body.deliveries[0];
 
     expect(entry.vesselName).toBe('MV Northern Star');
   });
@@ -137,10 +133,8 @@ describe('Ticket 12: Berth change detection and notification', () => {
       to: '2026-03-01T22:00:00Z',
     });
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    const logRes = await request(app).get('/api/webhooks/deliveries');
-    const entry = logRes.body.deliveries[0];
+    const body = await waitForDeliveries(request, app);
+    const entry = body.deliveries[0];
 
     expect(entry.url).toBe(url);
   });

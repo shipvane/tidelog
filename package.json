@@ -40,6 +40,9 @@
     "testEnvironment": "node",
     "roots": [
       "<rootDir>/tests"
+    ],
+    "setupFilesAfterEnv": [
+      "<rootDir>/tests/setup/no-network.js"
     ]
   }
 }

@@ -17,6 +17,12 @@ const request = require('supertest');
 const app = require('../server');
 const db = require('../routes/db');
 const { fireEvent, deliverToSubscription, attemptDelivery } = require('../lib/webhooks');
+const {
+  setWebhookTransport,
+  makeFailingTransport,
+  waitForDeliveries,
+  waitFor,
+} = require('./support/webhook-transport');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -153,23 +159,19 @@ describe('DELETE /api/webhooks/:id — remove subscription', () => {
 
 describe('POST /api/arrivals/:id/arrive — arrival_confirmed event', () => {
   test('fires arrival_confirmed and logs a delivery attempt', async () => {
-    // Register a subscription pointing at a non-existent host (delivery will fail
-    // and be logged; we verify the log entry, not a successful HTTP call).
-    await registerSub('MV Northern Star', 'http://127.0.0.1:1/no-server');
+    // The injected transport (see tests/setup/no-network.js) records the
+    // delivery without any real HTTP; we verify the log entry it produces.
+    await registerSub('MV Northern Star', 'http://agent.example/hook');
     const { body: arrBody } = await request(app).post('/api/arrivals').send(validManifest());
     await request(app).post(`/api/arrivals/${arrBody.arrival.id}/arrive`).send({});
 
-    // Give the fire-and-forget delivery a moment to attempt.
-    await new Promise((r) => setTimeout(r, 100));
-
-    const logRes = await request(app).get(
-      '/api/webhooks/deliveries?vesselName=MV%20Northern%20Star&eventType=arrival_confirmed'
-    );
-    expect(logRes.status).toBe(200);
-    // At least one attempt logged (initial; retry waits 5 s so won't appear yet)
-    expect(logRes.body.deliveries.length).toBeGreaterThanOrEqual(1);
-    expect(logRes.body.deliveries[0].eventType).toBe('arrival_confirmed');
-    expect(logRes.body.deliveries[0].vesselName).toBe('MV Northern Star');
+    // Poll the fire-and-forget delivery in rather than sleeping a fixed 100 ms.
+    const body = await waitForDeliveries(request, app, {
+      query: '?vesselName=MV%20Northern%20Star&eventType=arrival_confirmed',
+    });
+    expect(body.deliveries.length).toBeGreaterThanOrEqual(1);
+    expect(body.deliveries[0].eventType).toBe('arrival_confirmed');
+    expect(body.deliveries[0].vesselName).toBe('MV Northern Star');
   });
 
   test('does not log a delivery when no subscription exists for the vessel', async () => {
@@ -188,17 +190,15 @@ describe('POST /api/arrivals/:id/arrive — arrival_confirmed event', () => {
 
 describe('POST /api/arrivals/:id/assign-berth — berth_assigned event', () => {
   test('fires berth_assigned and logs a delivery attempt', async () => {
-    await registerSub('MV Northern Star', 'http://127.0.0.1:1/no-server');
+    await registerSub('MV Northern Star', 'http://agent.example/hook');
     const { body: arrBody } = await request(app).post('/api/arrivals').send(validManifest());
     await request(app)
       .post(`/api/arrivals/${arrBody.arrival.id}/assign-berth`)
       .send({ from: '2026-03-01T14:00:00Z', to: '2026-03-01T22:00:00Z' });
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    const logRes = await request(app).get('/api/webhooks/deliveries?eventType=berth_assigned');
-    expect(logRes.body.deliveries.length).toBeGreaterThanOrEqual(1);
-    const entry = logRes.body.deliveries[0];
+    const body = await waitForDeliveries(request, app, { query: '?eventType=berth_assigned' });
+    expect(body.deliveries.length).toBeGreaterThanOrEqual(1);
+    const entry = body.deliveries[0];
     expect(entry.eventType).toBe('berth_assigned');
     expect(entry.vesselName).toBe('MV Northern Star');
   });
@@ -217,15 +217,13 @@ describe('POST /api/arrivals/:id/overdue — vessel overdue', () => {
   });
 
   test('fires vessel_overdue webhook event', async () => {
-    await registerSub('MV Northern Star', 'http://127.0.0.1:1/no-server');
+    await registerSub('MV Northern Star', 'http://agent.example/hook');
     const { body: arrBody } = await request(app).post('/api/arrivals').send(validManifest());
     await request(app).post(`/api/arrivals/${arrBody.arrival.id}/overdue`).send();
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    const logRes = await request(app).get('/api/webhooks/deliveries?eventType=vessel_overdue');
-    expect(logRes.body.deliveries.length).toBeGreaterThanOrEqual(1);
-    expect(logRes.body.deliveries[0].eventType).toBe('vessel_overdue');
+    const body = await waitForDeliveries(request, app, { query: '?eventType=vessel_overdue' });
+    expect(body.deliveries.length).toBeGreaterThanOrEqual(1);
+    expect(body.deliveries[0].eventType).toBe('vessel_overdue');
   });
 
   test('409 if vessel is not expected', async () => {
@@ -282,16 +280,14 @@ describe('POST /api/arrivals/:id/depart — departure logged', () => {
   });
 
   test('fires departure_logged webhook event', async () => {
-    await registerSub('MV Northern Star', 'http://127.0.0.1:1/no-server');
+    await registerSub('MV Northern Star', 'http://agent.example/hook');
     const { body: arrBody } = await request(app).post('/api/arrivals').send(validManifest());
     await request(app).post(`/api/arrivals/${arrBody.arrival.id}/arrive`).send({});
     await request(app).post(`/api/arrivals/${arrBody.arrival.id}/depart`).send({});
 
-    await new Promise((r) => setTimeout(r, 100));
-
-    const logRes = await request(app).get('/api/webhooks/deliveries?eventType=departure_logged');
-    expect(logRes.body.deliveries.length).toBeGreaterThanOrEqual(1);
-    expect(logRes.body.deliveries[0].eventType).toBe('departure_logged');
+    const body = await waitForDeliveries(request, app, { query: '?eventType=departure_logged' });
+    expect(body.deliveries.length).toBeGreaterThanOrEqual(1);
+    expect(body.deliveries[0].eventType).toBe('departure_logged');
   });
 
   test('409 if vessel is still expected', async () => {
@@ -496,12 +492,11 @@ describe('POST /api/webhooks/deliveries/:id/resend', () => {
     });
 
     await request(app).post('/api/webhooks/deliveries/DLV-ORIG2/resend');
-    await new Promise((r) => setTimeout(r, 100));
 
-    const logRes = await request(app).get('/api/webhooks/deliveries');
-    // Original + at least one resend attempt
-    expect(logRes.body.deliveries.length).toBeGreaterThanOrEqual(2);
-    const resendEntry = logRes.body.deliveries.find((e) => e.eventType === 'berth_assigned');
+    // Original + at least one resend attempt, polled in rather than slept for.
+    const body = await waitForDeliveries(request, app, { min: 2 });
+    expect(body.deliveries.length).toBeGreaterThanOrEqual(2);
+    const resendEntry = body.deliveries.find((e) => e.eventType === 'berth_assigned');
     expect(resendEntry).toBeDefined();
   });
 });
@@ -512,7 +507,9 @@ describe('POST /api/webhooks/deliveries/:id/resend', () => {
 
 describe('attemptDelivery', () => {
   test('returns ok:false and an error string when the server is unreachable', async () => {
-    const result = await attemptDelivery('http://127.0.0.1:1/no-server', { test: true });
+    // A failing transport stands in for the unreachable host — no real socket.
+    setWebhookTransport(makeFailingTransport('ECONNREFUSED'));
+    const result = await attemptDelivery('http://agent.example/hook', { test: true });
     expect(result.ok).toBe(false);
     expect(typeof result.error).toBe('string');
     expect(result.error.length).toBeGreaterThan(0);
@@ -521,29 +518,40 @@ describe('attemptDelivery', () => {
 
 describe('deliverToSubscription', () => {
   test('pushes a log entry even when the server is unreachable', async () => {
-    const sub = { id: 'WH-0001', vesselName: 'Selkie', url: 'http://127.0.0.1:1/no-server' };
-    const event = {
-      eventType: 'arrival_confirmed',
-      vesselName: 'Selkie',
-      firedAt: new Date().toISOString(),
-    };
+    // Failing transport reproduces an unreachable host without a real socket.
+    // The 5 s retry delay (product behaviour, unchanged) is driven with fake
+    // timers so the real timer never outlives the test — that dangling timer is
+    // the "worker failed to exit gracefully" warning this item set out to kill.
+    setWebhookTransport(makeFailingTransport('ECONNREFUSED'));
+    jest.useFakeTimers();
+    try {
+      const sub = { id: 'WH-0001', vesselName: 'Selkie', url: 'http://agent.example/hook' };
+      const event = {
+        eventType: 'arrival_confirmed',
+        vesselName: 'Selkie',
+        firedAt: new Date().toISOString(),
+      };
 
-    const earlyLog = [];
-    const deliveryPromise = deliverToSubscription(sub, event, earlyLog);
+      const earlyLog = [];
+      const deliveryPromise = deliverToSubscription(sub, event, earlyLog);
 
-    // The first attempt resolves quickly (connection refused).
-    await new Promise((r) => setTimeout(r, 100));
-    expect(earlyLog.length).toBeGreaterThanOrEqual(1);
-    expect(earlyLog[0].subscriptionId).toBe('WH-0001');
-    expect(earlyLog[0].eventType).toBe('arrival_confirmed');
-    expect(earlyLog[0].ok).toBe(false);
-    expect(earlyLog[0].retried).toBe(false);
+      // The first attempt resolves on the microtask queue (transport rejects).
+      await jest.advanceTimersByTimeAsync(0);
+      expect(earlyLog.length).toBe(1);
+      expect(earlyLog[0].subscriptionId).toBe('WH-0001');
+      expect(earlyLog[0].eventType).toBe('arrival_confirmed');
+      expect(earlyLog[0].ok).toBe(false);
+      expect(earlyLog[0].retried).toBe(false);
 
-    // Let the full promise settle (retry delay + second attempt).
-    await deliveryPromise;
-    expect(earlyLog.length).toBe(2);
-    expect(earlyLog[1].retried).toBe(true);
-  }, 15_000); // allow up to 15 s for the 5 s retry delay
+      // Advance past the 5 s retry delay and let the second attempt settle.
+      await jest.advanceTimersByTimeAsync(5_000);
+      await deliveryPromise;
+      expect(earlyLog.length).toBe(2);
+      expect(earlyLog[1].retried).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('fireEvent', () => {
@@ -558,11 +566,14 @@ describe('fireEvent', () => {
   test('only delivers to matching vessel subscriptions', async () => {
     const eventLog = [];
     const subs = [
-      { id: 'WH-0001', vesselName: 'Selkie', url: 'http://127.0.0.1:1/no-server' },
-      { id: 'WH-0002', vesselName: 'Tarn Voyager', url: 'http://127.0.0.1:1/no-server' },
+      { id: 'WH-0001', vesselName: 'Selkie', url: 'http://agent.example/hook' },
+      { id: 'WH-0002', vesselName: 'Tarn Voyager', url: 'http://agent.example/hook' },
     ];
     fireEvent(subs, eventLog, 'Selkie', 'arrival_confirmed', {});
-    await new Promise((r) => setTimeout(r, 100));
+    await waitFor(
+      async () => eventLog,
+      (log) => log.some((e) => e.subscriptionId === 'WH-0001')
+    );
     // Only Selkie's subscription should have been attempted.
     const selkieEntries = eventLog.filter((e) => e.subscriptionId === 'WH-0001');
     const tarnEntries = eventLog.filter((e) => e.subscriptionId === 'WH-0002');
