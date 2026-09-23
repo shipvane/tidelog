@@ -4,11 +4,19 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TideLog — Harbor Operations</title>
+    <meta name="theme-color" content="#0b1f33" />
     <link rel="stylesheet" href="styles.css" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9A%93%3C/text%3E%3C/svg%3E"
     />
+    <!-- iOS ignores the manifest for Add to Home Screen, so these are required
+         for an installed TideLog to get a real icon and standalone chrome. -->
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="TideLog" />
   </head>
   <body>
     <header class="topbar">
