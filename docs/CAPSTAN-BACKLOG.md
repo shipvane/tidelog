@@ -57,7 +57,7 @@ a human decision. Keep it that way.
      Tracked as SVD-11/12/13. -->
 
 - [x] PWA (1/3): installable shell — manifest, real icons, iOS meta tags — tracked as **SVD-11**
-  - Done: manifest + real anchor PNG icons (192/512 any, 512 maskable, 180 apple-touch) + iOS meta tags. PR: _capstan/pwa-installable-shell_ (link below once opened).
+  - Done: manifest + real anchor PNG icons (192/512 any, 512 maskable, 180 apple-touch) + iOS meta tags. PR: https://github.com/shipvane/tidelog/pull/50
   - The safe slice: adds files and markup only, no service worker, so it cannot break the live demo.
   - Today there is no manifest and no icon on disk — `public/index.html` declares an inline SVG data-URI favicon and nothing else.
   - Add `public/manifest.webmanifest` (name, short_name, `start_url: "/"`, `scope: "/"`, `display: "standalone"`), taking `theme_color`/`background_color` from the existing palette in `public/styles.css` rather than inventing them. Link it from `index.html`.
