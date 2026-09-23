@@ -36,6 +36,19 @@ a human decision. Keep it that way.
 
 ## Backlog
 
+### Test reliability
+
+- [ ] Webhook delivery tests race a real network call with a 100ms sleep — tracked as **SVE-151**
+  - **This is first because it breaks unrelated PRs.** It failed CI on a docs-only change (#46) that could not possibly affect tests, and it is on `main` now, so it will keep tripping at random until fixed. A red gate that is nobody's fault trains everyone to re-run rather than read.
+  - Mechanism: `tests/ticket-12-berth-change.test.js:140` sleeps `setTimeout(r, 100)` and then reads `logRes.body.deliveries[0]` unguarded. The delivery is a **real outbound `fetch()`** (`lib/webhooks.js:32`) to `https://meridian-shipping.example/...`, a domain that cannot resolve — `.example` is reserved by RFC 2606 — and nothing is written to the delivery log until that attempt settles. `REQUEST_TIMEOUT_MS` is **10_000** and `RETRY_DELAY_MS` is **5_000** (`lib/webhooks.js:18-19`). The test therefore gives a 10-second budget 100 milliseconds, then indexes `[0]` on an empty array and throws `TypeError: Cannot read properties of undefined (reading 'url')`.
+  - It usually passes only because failing fast is fast. A CI runner with slower DNS, or one where outbound hangs instead of refusing, loses the race. The same run also reports `A worker process has failed to exit gracefully` — that is the pending 5s retry timer outliving the test, same root cause.
+  - **Five tests share this, not one:** lines **47, 76, 88, 114 and 140**. Which one trips is down to scheduling — one local run produced 4 failures in this suite, the CI run produced 1. Fix all five.
+  - **Do not lengthen the sleep.** A bigger constant is the same bug plus seconds on every run. Do not mark the tests `skip` either; the behaviour under test is real and worth testing.
+  - Preferred fix: **stub the transport** so the suite makes no outbound network request at all. These tests are about subscription capture and delivery-log wiring, not about HTTP. Second choice: poll for `deliveries.length > 0` against a deadline, so the test takes as long as it needs and no longer. Either way **guard the index** — an empty delivery log should fail as a readable assertion about the log, not as a `TypeError` about `undefined`.
+  - **Do not change `lib/webhooks.js`'s retry semantics to make testing easier.** The 10s timeout and the single 5s retry are product behaviour; the test is what is wrong. If injecting a transport requires a seam in that module, add the seam without altering what the default path does, and say so in the PR.
+  - Tests: the five tests must pass **with the outbound request made to hang deliberately** — that is the CI condition they currently cannot survive, so it is the condition the fix has to be demonstrated against. A green local run proves nothing here: the suite passes 10/10 in isolation and 6/6 full-suite on a fast machine while still failing on CI. Also assert no test in the suite performs a real outbound request afterwards, and that jest exits without the leaked-worker warning.
+  - **Question to answer in the PR:** which of the two fixes did you choose, and what convinced you the failure can no longer happen — naming the specific condition you reproduced, not "tests pass locally".
+
 ### PWA — installable, offline-capable harbor logbook (2026-08-10)
 
 <!-- A harbor master uses this on a dock, on a phone, often on bad signal, which
