@@ -59,7 +59,7 @@ a human decision. Keep it that way.
 - [x] PWA (1/3): installable shell — manifest, real icons, iOS meta tags — tracked as **SVD-11**
   - Done: manifest + real anchor PNG icons (192/512 any, 512 maskable, 180 apple-touch) + iOS meta tags. PR: https://github.com/shipvane/tidelog/pull/50
   - The safe slice: adds files and markup only, no service worker, so it cannot break the live demo.
-  - Today there is no manifest and no icon on disk — `public/index.html` declares an inline SVG data-URI favicon and nothing else.
+  - Before this slice there was no manifest and no icon on disk — `public/index.html` declared an inline SVG data-URI favicon and nothing else.
   - Add `public/manifest.webmanifest` (name, short_name, `start_url: "/"`, `scope: "/"`, `display: "standalone"`), taking `theme_color`/`background_color` from the existing palette in `public/styles.css` rather than inventing them. Link it from `index.html`.
   - Icons in `public/icons/`: 192 and 512 `purpose: "any"`, **plus a separate 512 `purpose: "maskable"`** with ~20% safe-zone padding. Do not reuse one file for both — Android's adaptive mask crops a design that fills the square. The anchor motif already in the header SVG is the obvious source.
   - `apple-touch-icon` (180×180) plus `apple-mobile-web-app-capable`, `apple-mobile-web-app-status-bar-style`, `apple-mobile-web-app-title`. iOS ignores the manifest for Add to Home Screen, so without these an installed TideLog opens in Safari chrome with a screenshot for an icon.
