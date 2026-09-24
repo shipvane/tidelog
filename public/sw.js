@@ -50,6 +50,10 @@ const PRECACHE_URLS = [
 // answer is always live.
 const KILL_URL = '/sw-kill';
 
+// Set once the kill switch has fired. A concurrent revalidation must not write
+// back into (and so recreate) a cache the kill path is deleting.
+let killed = false;
+
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS)));
   // Take over as soon as installed rather than waiting for every tab to close —
@@ -80,6 +84,9 @@ async function checkKillSwitch() {
     if (!res || !res.ok) return;
     const body = await res.json();
     if (body && body.kill === true) {
+      // Flip the flag first so an in-flight revalidation stops writing before
+      // the caches are deleted.
+      killed = true;
       await self.registration.unregister();
       const names = await caches.keys();
       await Promise.all(names.map((name) => caches.delete(name)));
@@ -101,11 +108,15 @@ async function staleWhileRevalidate(request, event) {
   const cached = await cache.match(request);
 
   const networkUpdate = fetch(request)
-    .then((response) => {
-      // Only cache real, same-origin success responses. An opaque or error
-      // response must never overwrite a good cached shell file.
-      if (response && response.ok && response.type === 'basic') {
-        cache.put(request, response.clone());
+    .then(async (response) => {
+      // Await the write so event.waitUntil actually covers it: a worker can be
+      // terminated after the fetch resolves but before an un-awaited put lands,
+      // which would strand the next load on stale bytes. Only cache real,
+      // same-origin success responses — an opaque or error response must never
+      // overwrite a good cached shell file — and never once the kill switch has
+      // fired, so a late write cannot recreate a just-deleted cache.
+      if (!killed && response && response.ok && response.type === 'basic') {
+        await cache.put(request, response.clone());
       }
       return response;
     })
