@@ -430,3 +430,15 @@ tickClock();
 setInterval(tickClock, 1000);
 refresh();
 setInterval(refresh, REFRESH_MS);
+
+/**
+ * Register the service worker (offline app shell). Guarded on feature detection
+ * so browsers without SW support just run the page normally. Root scope so it
+ * controls every path.
+ */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('SW registration failed:', err);
+  });
+}
