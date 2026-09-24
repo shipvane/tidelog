@@ -9,7 +9,8 @@
 
 const request = require('supertest');
 
-const app = require('../server');
+const { boundServer } = require('./support/server');
+const app = boundServer(require('../server'));
 
 describe('demo.shipvane.com alias', () => {
   it('301s the old host to tidelog.shipvane.com, path and query intact', async () => {

@@ -14,7 +14,8 @@
 
 const request = require('supertest');
 
-const app = require('../server');
+const { boundServer } = require('./support/server');
+const app = boundServer(require('../server'));
 const db = require('../routes/db');
 const { fireEvent, deliverToSubscription, attemptDelivery } = require('../lib/webhooks');
 const {

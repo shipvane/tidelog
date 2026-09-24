@@ -11,7 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const request = require('supertest');
 
-const app = require('../server');
+const { boundServer } = require('./support/server');
+const app = boundServer(require('../server'));
 
 describe('PWA - manifest and icons', () => {
   test('GET /manifest.webmanifest returns 200 with application/manifest+json', async () => {
