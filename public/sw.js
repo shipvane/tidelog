@@ -23,9 +23,23 @@
  * The switch runs on the SW's own fetch path (which still executes when the
  * cache is serving garbage): every navigation checks `/sw-kill` network-first,
  * and on `{ kill: true }` the SW unregisters itself and deletes every cache, so
- * the next load is unmanaged. Trigger it by deploying with `TIDELOG_SW_KILL=true`
- * (server.js turns that into a truthy `/sw-kill`). No console paste, no reliance
- * on the broken SW letting a new one through.
+ * the next load is unmanaged. public/sw-register.js asks the same sentinel before
+ * registering, so an unmanaged page does not install the worker again; without
+ * that the switch would flap on and off. No console paste, no reliance on the
+ * broken SW letting a new one through.
+ *
+ * HOW TO PULL IT. Env reaches production only through apprunner.yaml, so add
+ *
+ *     - name: TIDELOG_SW_KILL
+ *       value: 'true'
+ *
+ * under `run.env` in apprunner.yaml and push to main (the push is the deploy).
+ * Returning visitors drop the worker on their next navigation. To restore it,
+ * remove the entry and push again.
+ *
+ * CACHE_VERSION only needs a bump when PRECACHE_URLS changes. File CONTENTS
+ * refresh on their own through stale-while-revalidate, so do not bump it on
+ * every deploy.
  */
 
 const CACHE_VERSION = 'v0.2.0-shell-1';
@@ -38,6 +52,7 @@ const CACHE_NAME = `tidelog-${CACHE_VERSION}`;
 const PRECACHE_URLS = [
   '/',
   '/app.js',
+  '/sw-register.js',
   '/styles.css',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
@@ -140,6 +155,11 @@ async function staleWhileRevalidate(request, event) {
 
 self.addEventListener('fetch', (event) => {
   const { request } = event;
+
+  // Once killed, stop serving entirely. This worker lives on until its pages
+  // close, and a request it answered after the kill would reopen (and so
+  // recreate) the cache the kill just deleted.
+  if (killed) return;
 
   // Only manage same-origin GETs. Writes and cross-origin requests pass straight
   // through to the network untouched.

@@ -101,17 +101,34 @@ describe('service worker — served & static', () => {
     expect(sw).toMatch(/self\.clients\.claim\(\)/);
   });
 
-  test('app.js registers the worker behind feature detection', () => {
+  test('the page loads sw-register.js, and app.js no longer registers on its own', () => {
+    const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf-8');
+    expect(html).toContain('<script src="sw-register.js"></script>');
+    // A second, ungated register() in app.js would bring back the flapping kill
+    // switch this file exists to prevent.
     const appJs = fs.readFileSync(path.join(PUBLIC_DIR, 'app.js'), 'utf-8');
-    expect(appJs).toMatch(/if\s*\(\s*['"]serviceWorker['"]\s+in\s+navigator\s*\)/);
-    expect(appJs).toContain("navigator.serviceWorker.register('/sw.js'");
-    expect(appJs).toContain("scope: '/'");
+    expect(appJs).not.toContain('serviceWorker.register');
   });
 
   test('GET /sw-kill exists and reports not-killed by default', async () => {
     const res = await request(app).get('/sw-kill');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ kill: false });
+  });
+
+  test('GET /sw-kill reports kill:true when TIDELOG_SW_KILL=true', async () => {
+    // The path that matters in an incident. server.js reads the env per
+    // request, so setting it here is exactly what an App Runner env entry does.
+    const before = process.env.TIDELOG_SW_KILL;
+    process.env.TIDELOG_SW_KILL = 'true';
+    try {
+      const res = await request(app).get('/sw-kill');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ kill: true });
+    } finally {
+      if (before === undefined) delete process.env.TIDELOG_SW_KILL;
+      else process.env.TIDELOG_SW_KILL = before;
+    }
   });
 });
 
@@ -297,5 +314,94 @@ describe('service worker — behaviour (driven directly)', () => {
     expect(ev._response).toBeUndefined();
     const cached = await env.caches.match('/api/berths');
     expect(cached).toBeUndefined();
+  });
+
+  test('after the kill, the worker stops serving and cannot recreate its cache', async () => {
+    // The worker lives on until its pages close. A request it answered after
+    // the kill would reopen the deleted cache and serve from it again.
+    const fetchImpl = jest.fn(async (input) => {
+      if (toPath(input) === '/sw-kill') return new FakeResponse(JSON.stringify({ kill: true }));
+      return new FakeResponse('fresh', { type: 'basic' });
+    });
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+
+    const nav = makeEvent({ url: 'http://localhost/', method: 'GET', mode: 'navigate' });
+    env.listeners.fetch(nav);
+    await Promise.all(nav._waits);
+    expect((await env.caches.keys()).length).toBe(0);
+
+    const later = makeEvent({ url: 'http://localhost/app.js', method: 'GET', mode: 'no-cors' });
+    env.listeners.fetch(later);
+    expect(later._response).toBeUndefined(); // straight to network, not the SW
+    await Promise.all(later._waits);
+    expect((await env.caches.keys()).length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Page side: load public/sw-register.js against a fake navigator.
+// ---------------------------------------------------------------------------
+
+const REGISTER_PATH = path.join(__dirname, '../public/sw-register.js');
+
+/** Let the registration promise chain run to the end. */
+async function settle() {
+  for (let i = 0; i < 10; i += 1) await new Promise((r) => setImmediate(r));
+}
+
+function runRegister({ fetchImpl, withSw = true, existing = [] }) {
+  const sw = {
+    register: jest.fn(async () => ({})),
+    getRegistrations: jest.fn(async () => existing),
+  };
+  const navigator = withSw ? { serviceWorker: sw } : {};
+  const consoleStub = { error: jest.fn() };
+  const code = fs.readFileSync(REGISTER_PATH, 'utf-8');
+  new Function('navigator', 'fetch', 'console', code)(navigator, fetchImpl, consoleStub);
+  return { sw, consoleStub };
+}
+
+describe('service worker registration — page side (sw-register.js)', () => {
+  test('registers /sw.js at root scope when the sentinel says kill:false', async () => {
+    const fetchImpl = jest.fn(async () => new FakeResponse(JSON.stringify({ kill: false })));
+    const { sw } = runRegister({ fetchImpl });
+    await settle();
+    expect(fetchImpl).toHaveBeenCalledWith('/sw-kill', { cache: 'no-store' });
+    expect(sw.register).toHaveBeenCalledWith('/sw.js', { scope: '/' });
+  });
+
+  test('kill:true means the page does NOT register, and removes any existing worker', async () => {
+    // The flap this prevents: SW unregisters itself, the next unmanaged load
+    // re-registers it, the one after is served from its cache again.
+    const stale = { unregister: jest.fn(async () => true) };
+    const fetchImpl = jest.fn(async () => new FakeResponse(JSON.stringify({ kill: true })));
+    const { sw } = runRegister({ fetchImpl, existing: [stale] });
+    await settle();
+    expect(sw.register).not.toHaveBeenCalled();
+    expect(stale.unregister).toHaveBeenCalled();
+  });
+
+  test('an unreachable sentinel fails open: offline still registers', async () => {
+    const fetchImpl = jest.fn(async () => {
+      throw new Error('offline');
+    });
+    const { sw } = runRegister({ fetchImpl });
+    await settle();
+    expect(sw.register).toHaveBeenCalledWith('/sw.js', { scope: '/' });
+  });
+
+  test('a non-OK sentinel (route missing) fails open too', async () => {
+    const fetchImpl = jest.fn(async () => new FakeResponse('nope', { ok: false, status: 404 }));
+    const { sw } = runRegister({ fetchImpl });
+    await settle();
+    expect(sw.register).toHaveBeenCalled();
+  });
+
+  test('a browser without service workers does nothing at all', async () => {
+    const fetchImpl = jest.fn();
+    runRegister({ fetchImpl, withSw: false });
+    await settle();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
