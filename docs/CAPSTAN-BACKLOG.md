@@ -94,8 +94,11 @@ a human decision. Keep it that way.
 
 - [x] PWA (3/3): offline behaviour for harbor data — tracked as **SVD-13**
   - Done in [#56](https://github.com/shipvane/tidelog/pull/56): SW now caches the read-only board endpoints
-    (`/api/arrivals`, `/api/berths`, `/api/tides/*`) stale-while-revalidate in a
-    separate `tidelog-api-*` cache; the header shows a "Synced HH:MM" time and an
+    (`/api/arrivals` and `/api/berths` exactly, `/api/tides/*`) **network-first
+    with a cache fallback**, not stale-while-revalidate as asked below: SWR served
+    cached data online and the page labelled it "Synced" now. Stored copies carry
+    `X-TideLog-Fetched-At`, and "Synced HH:MM" is the oldest read's fetch time. The
+    api cache is versioned apart from the shell. The header also shows an
     OFFLINE badge driven by `navigator.onLine`; offline berth assignment is
     refused with the selection preserved (no write queue). All four kill-switch
     safeguards kept — the kill path deletes every cache, so the api cache goes

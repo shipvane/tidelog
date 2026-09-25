@@ -60,7 +60,11 @@ const CACHE_NAME = `tidelog-${CACHE_VERSION}`;
 // caches the activate handler must preserve. The kill path deletes EVERY cache
 // (see checkKillSwitch), so lifting the "never cache /api" rule does not create a
 // cache the kill switch cannot reach — API data is dropped with the rest.
-const API_CACHE_NAME = `tidelog-api-${CACHE_VERSION}`;
+// Versioned on its own, NOT with CACHE_VERSION: a shell change bumps that, and
+// tying the two would make every shell deploy delete everyone's offline harbor
+// snapshot. Bump this only when the cached data's format changes.
+const API_CACHE_VERSION = 'v1';
+const API_CACHE_NAME = `tidelog-api-${API_CACHE_VERSION}`;
 
 // Only the board's own reads are cached for offline use: the two list endpoints
 // EXACTLY, plus the tide calculations. Exact matters: `/api/arrivals/:id/dues`,

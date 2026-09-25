@@ -102,6 +102,13 @@ describe('service worker — served & static', () => {
     expect(sw).not.toContain("'/api/webhooks'");
   });
 
+  test('the api cache is versioned apart from the shell, so a shell bump keeps offline data', () => {
+    const sw = readSw();
+    expect(sw).toMatch(/const API_CACHE_VERSION = ['"][\w.-]+['"]/);
+    expect(sw).toContain('const API_CACHE_NAME = `tidelog-api-${API_CACHE_VERSION}`');
+    expect(sw).not.toMatch(/API_CACHE_NAME = `[^`]*\$\{CACHE_VERSION\}/);
+  });
+
   test('sw.js uses skipWaiting + clients.claim so a deploy reaches open tabs', () => {
     const sw = readSw();
     expect(sw).toMatch(/self\.skipWaiting\(\)/);
