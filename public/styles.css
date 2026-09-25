@@ -4,6 +4,7 @@
   --navy-700: #17364f;
   --ink: #16283a;
   --muted: #5b7186;
+  --topbar-ink: #d7e3ee;
   --line: #dbe4ec;
   --paper: #f4f7fa;
   --card: #ffffff;
@@ -90,7 +91,7 @@ body {
 .clock {
   font-variant-numeric: tabular-nums;
   font-size: 1.15rem;
-  color: #d7e3ee;
+  color: var(--topbar-ink);
 }
 
 .badge {
@@ -123,7 +124,7 @@ body {
 
 .synced {
   font-size: 0.72rem;
-  color: #d7e3ee;
+  color: var(--topbar-ink);
   opacity: 0.85;
   font-variant-numeric: tabular-nums;
 }

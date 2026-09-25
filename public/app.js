@@ -31,11 +31,25 @@ async function fetchJson(url) {
   return res.json();
 }
 
+/**
+ * Harbor-data read that also reports WHEN the data was fetched. The service
+ * worker stamps every copy it stores with `X-TideLog-Fetched-At`, so an offline
+ * answer from its cache says how old it is. No header means the response came
+ * straight off the network, which makes it current as of now.
+ */
+async function fetchData(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  const stamped = Number(res.headers && res.headers.get && res.headers.get('X-TideLog-Fetched-At'));
+  return { data: await res.json(), fetchedAt: stamped > 0 ? stamped : Date.now() };
+}
+
 // SVD-13 offline support. The service worker serves harbor data from a cache
 // when offline, so a read still SUCCEEDS with no network — which means fetch
 // success can no longer tell us we are live. `navigator.onLine` and the
-// online/offline events are the source of truth for the connection badge, and
-// the last-synced time records when we last pulled fresh data over the network.
+// online/offline events are the source of truth for the connection badge. The
+// last-synced time is the fetch time of the OLDEST data on screen, read off the
+// response itself (see fetchData), never the moment the page asked.
 const LAST_SYNCED_KEY = 'tidelog:last-synced';
 
 function loadLastSynced() {
@@ -61,11 +75,18 @@ let lastSyncedAt = loadLastSynced();
 function renderSyncState() {
   const online = navigator.onLine;
 
+  // Every lookup here is guarded. The shell files revalidate independently, so
+  // after a deploy a returning visitor can run this app.js against an older
+  // cached index.html that predates these elements. Throwing here would stop the
+  // dashboard loading at all; skipping the label just leaves it unshown.
   const badge = document.getElementById('status-badge');
-  badge.textContent = online ? 'LIVE' : 'OFFLINE';
-  badge.className = online ? 'badge badge-live' : 'badge badge-offline';
+  if (badge) {
+    badge.textContent = online ? 'LIVE' : 'OFFLINE';
+    badge.className = online ? 'badge badge-live' : 'badge badge-offline';
+  }
 
   const synced = document.getElementById('last-synced');
+  if (!synced) return;
   if (lastSyncedAt) {
     synced.hidden = false;
     synced.textContent = `Synced ${fmtTime(lastSyncedAt)}`;
@@ -103,6 +124,9 @@ function filterCompatibleBerths(berths, vessel) {
  */
 function setModalMessage(text, kind) {
   const box = document.getElementById('modal-message');
+  // Missing on an older cached index.html (see renderSyncState). The write is
+  // still refused; only the explanation goes unshown until the next load.
+  if (!box) return;
   if (!text) {
     box.hidden = true;
     box.textContent = '';
@@ -475,11 +499,12 @@ async function refreshNotifications() {
 async function refresh() {
   try {
     const arrivalsUrl = buildArrivalsUrl();
-    const [arrivalsRes, berthsRes, windowsRes] = await Promise.all([
-      fetchJson(arrivalsUrl),
-      fetchJson('/api/berths'),
-      fetchJson(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
+    const reads = await Promise.all([
+      fetchData(arrivalsUrl),
+      fetchData('/api/berths'),
+      fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
+    const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
     renderArrivals(arrivalsRes.arrivals, berthsRes.berths);
     renderBerths(berthsRes.berths);
@@ -493,13 +518,11 @@ async function refresh() {
       (a) => a.status === 'arrived'
     ).length;
 
-    // Only stamp a fresh sync time when we are genuinely online: offline, the
-    // service worker answers these reads from cache, so a success here would
-    // otherwise mask stale data as current.
-    if (navigator.onLine) {
-      lastSyncedAt = Date.now();
-      saveLastSynced(lastSyncedAt);
-    }
+    // The board is only as fresh as its oldest read, so that is the time shown.
+    // It comes from the responses themselves: offline, these are cached copies
+    // still stamped with when they were really fetched.
+    lastSyncedAt = Math.min(...reads.map((r) => r.fetchedAt));
+    saveLastSynced(lastSyncedAt);
   } catch {
     // Reads failed (offline with a cold cache, or a transient error). Keep the
     // last good render; renderSyncState() below shows the real connection state.
