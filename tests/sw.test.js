@@ -89,10 +89,17 @@ describe('service worker — served & static', () => {
     expect(precached).not.toContain('/index.html');
   });
 
-  test('sw.js never caches /api/* and has a CACHE_VERSION', () => {
+  test('sw.js routes /api/ and has a CACHE_VERSION (harbor data cached, rest network-only)', () => {
     const sw = readSw();
     expect(sw).toContain("url.pathname.startsWith('/api/')");
     expect(sw).toMatch(/const CACHE_VERSION = ['"]v[\d.]+[\w-]*['"]/);
+    // SVD-13: read-only board endpoints are cached for offline reads, in a
+    // separate api cache; webhooks/stats/health are not in the allowlist.
+    expect(sw).toContain('API_CACHE_NAME');
+    expect(sw).toContain("'/api/arrivals'");
+    expect(sw).toContain("'/api/berths'");
+    expect(sw).toContain("'/api/tides'");
+    expect(sw).not.toContain("'/api/webhooks'");
   });
 
   test('sw.js uses skipWaiting + clients.claim so a deploy reaches open tabs', () => {
@@ -302,18 +309,76 @@ describe('service worker — behaviour (driven directly)', () => {
     expect((await env.caches.keys()).length).toBe(1);
   });
 
-  test('/api/* is passed straight to network — never intercepted or cached', async () => {
+  test('non-cacheable /api/* (webhooks) is passed straight to network — never intercepted or cached', async () => {
     const fetchImpl = jest.fn(async () => new FakeResponse('{}', { type: 'basic' }));
     const env = buildEnv(fetchImpl);
     await warm(env);
 
-    const ev = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    const ev = makeEvent({
+      url: 'http://localhost/api/webhooks/deliveries',
+      method: 'GET',
+      mode: 'cors',
+    });
     env.listeners.fetch(ev);
-    // The handler returns before calling respondWith for /api, so the browser
-    // does its own default network fetch.
+    // The handler returns before calling respondWith for a non-allowlisted /api
+    // path, so the browser does its own default network fetch.
     expect(ev._response).toBeUndefined();
-    const cached = await env.caches.match('/api/berths');
+    const cached = await env.caches.match('/api/webhooks/deliveries');
     expect(cached).toBeUndefined();
+  });
+
+  test('harbor data (/api/berths) is cached, then served from cache when offline (SVD-13)', async () => {
+    let online = true;
+    const fetchImpl = jest.fn(async () => {
+      if (!online) throw new Error('offline');
+      return new FakeResponse('{"berths":["B1"]}', { type: 'basic' });
+    });
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+
+    // Cold: nothing cached yet, so the board comes from the network and is
+    // written into the api cache for next time.
+    const first = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(first);
+    const firstServed = await first._response;
+    expect(await firstServed.text()).toBe('{"berths":["B1"]}');
+    await Promise.all(first._waits);
+    const cached = await env.caches.match('/api/berths');
+    expect(await cached.text()).toBe('{"berths":["B1"]}');
+
+    // Now offline: the same read still resolves, served from cache rather than a
+    // network error — this is the whole point of SVD-13.
+    online = false;
+    const offline = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(offline);
+    const offlineServed = await offline._response;
+    expect(await offlineServed.text()).toBe('{"berths":["B1"]}');
+  });
+
+  test('the kill switch also drops the api data cache, not just the shell', async () => {
+    // SVD-13 lifts the "never cache /api" rule; the kill path must still leave a
+    // clean slate. It deletes EVERY cache, so the api cache goes with the shell.
+    const fetchImpl = jest.fn(async (input) => {
+      if (toPath(input) === '/sw-kill') return new FakeResponse(JSON.stringify({ kill: true }));
+      return new FakeResponse('{"berths":[]}', { type: 'basic' });
+    });
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+
+    // Populate the api cache so there are two caches to clear.
+    const api = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(api);
+    await api._response;
+    await Promise.all(api._waits);
+    expect((await env.caches.keys()).length).toBe(2); // shell + api
+
+    // A navigation fires the kill switch.
+    const nav = makeEvent({ url: 'http://localhost/', method: 'GET', mode: 'navigate' });
+    env.listeners.fetch(nav);
+    await Promise.all(nav._waits);
+
+    expect(env.self.registration.unregister).toHaveBeenCalled();
+    expect((await env.caches.keys()).length).toBe(0);
   });
 
   test('after the kill, the worker stops serving and cannot recreate its cache', async () => {

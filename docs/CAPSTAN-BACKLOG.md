@@ -92,7 +92,14 @@ a human decision. Keep it that way.
   - Register from `public/app.js`, guarded on `'serviceWorker' in navigator`. Add an offline fallback so a cold load with no signal renders the shell and a clear offline state rather than the browser's dinosaur.
   - Tests: the SW is served at `/sw.js` with root scope (nested, it cannot control the page); the precache list matches what is actually in `public/` — a test that globs the directory and diffs catches the forgotten version bump; no cache rule matches `/api`.
 
-- [ ] PWA (3/3): offline behaviour for harbor data — tracked as **SVD-13**
+- [x] PWA (3/3): offline behaviour for harbor data — tracked as **SVD-13**
+  - Done in [#56](https://github.com/shipvane/tidelog/pull/56): SW now caches the read-only board endpoints
+    (`/api/arrivals`, `/api/berths`, `/api/tides/*`) stale-while-revalidate in a
+    separate `tidelog-api-*` cache; the header shows a "Synced HH:MM" time and an
+    OFFLINE badge driven by `navigator.onLine`; offline berth assignment is
+    refused with the selection preserved (no write queue). All four kill-switch
+    safeguards kept — the kill path deletes every cache, so the api cache goes
+    with the shell; existing kill-switch tests unchanged.
   - Depends on SVD-12. (SVD-12 shipped as #54: `public/sw.js` + `public/sw-register.js`. Build on them.)
   - **Do not weaken the kill switch while changing `sw.js`.** This item has to lift SVD-12's "never cache `/api/*`" rule, and that edit sits right next to the safety code. Keep all four: the `/sw-kill` check on navigations; `if (killed) return;` at the top of the fetch handler; the `!killed` guard before every `cache.put` (a new API cache needs it too); and `sw-register.js` checking the sentinel before it registers. The kill path deletes **every** cache, so API data must live in the Cache API (not IndexedDB) or the kill must be taught to clear it too. Say which in the PR. If `PRECACHE_URLS` changes, bump `CACHE_VERSION`. The existing kill-switch tests in `tests/sw.test.js` must still pass unmodified.
   - **Reads:** cache `GET /api/arrivals`, `/api/berths`, `/api/tides` stale-while-revalidate, and **show when the data is from**. A berth board with no timestamp is indistinguishable from a live one, and acting on a stale berth assignment is the exact failure this app exists to prevent. A visible "last synced HH:MM" beats silent staleness.

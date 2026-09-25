@@ -13,8 +13,14 @@
  *     writes the fresh copy back. On this repo a push to `main` IS the deploy
  *     with no staging, so a returning visitor MUST eventually see a new build —
  *     pure cache-first would strand them on an old shell until every tab closed.
- *   - `/api/*`: network-only, never cached. Harbor data (berths, tides) served
- *     stale is worse than an error; that is SVD-13's problem, not this slice's.
+ *   - Harbor data (`GET /api/arrivals`, `/api/berths`, `/api/tides/*`):
+ *     stale-while-revalidate in a SEPARATE api cache, so the board still paints
+ *     offline (SVD-13). The page shows a "last synced" time and an offline badge
+ *     so the staleness is visible — silent staleness on a berth board is exactly
+ *     the failure this app exists to prevent.
+ *   - Every other `/api/*` (webhooks, stats, health) and all writes: network-only.
+ *     A stale delivery log, or a write that silently "succeeds" from cache, is
+ *     worse than an honest error.
  *   - New versions activate promptly via skipWaiting/clients.claim so a deploy
  *     reaches open tabs without waiting for all of them to close.
  *
@@ -44,6 +50,21 @@
 
 const CACHE_VERSION = 'v0.2.0-shell-1';
 const CACHE_NAME = `tidelog-${CACHE_VERSION}`;
+
+// Harbor data lives in its own cache, kept apart from the shell so a shell
+// version bump does not wipe cached board data and vice versa. Both are current
+// caches the activate handler must preserve. The kill path deletes EVERY cache
+// (see checkKillSwitch), so lifting the "never cache /api" rule does not create a
+// cache the kill switch cannot reach — API data is dropped with the rest.
+const API_CACHE_NAME = `tidelog-api-${CACHE_VERSION}`;
+
+// Only these read-only board endpoints are cached for offline reads. Writes are
+// excluded by method before this ever applies; webhooks/stats/health stay
+// network-only on purpose (a stale delivery log is misleading, not useful).
+const CACHEABLE_API_PREFIXES = ['/api/arrivals', '/api/berths', '/api/tides'];
+function isCacheableApiPath(pathname) {
+  return CACHEABLE_API_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
 
 // The app shell. `/` is the document (index.html); it is NOT listed separately
 // as `/index.html` — they are the same resource and two entries would cache one
@@ -80,9 +101,12 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((names) =>
-        Promise.all(names.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name)))
-      )
+      .then((names) => {
+        const current = new Set([CACHE_NAME, API_CACHE_NAME]);
+        return Promise.all(
+          names.filter((name) => !current.has(name)).map((name) => caches.delete(name))
+        );
+      })
       .then(() => self.clients.claim())
   );
 });
@@ -116,10 +140,12 @@ async function checkKillSwitch() {
  * in the background fetch a fresh copy and write it back so the NEXT load is
  * current. `event.waitUntil` keeps the worker alive for that background write
  * (and makes it observable to tests). Falls back to the cached shell for a
- * navigation when the network is unreachable and nothing else matched.
+ * navigation when the network is unreachable and nothing else matched. Used for
+ * both the shell (CACHE_NAME) and harbor data (API_CACHE_NAME) — the `cacheName`
+ * arg picks which; the navigate fallback only fires for shell navigations.
  */
-async function staleWhileRevalidate(request, event) {
-  const cache = await caches.open(CACHE_NAME);
+async function staleWhileRevalidate(request, event, cacheName = CACHE_NAME) {
+  const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
 
   const networkUpdate = fetch(request)
@@ -167,9 +193,19 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // NEVER cache /api/*, the SW itself, or the kill sentinel.
-  if (url.pathname.startsWith('/api/') || url.pathname === '/sw.js' || url.pathname === KILL_URL) {
+  // The SW script and the kill sentinel are always network-only, never cached.
+  if (url.pathname === '/sw.js' || url.pathname === KILL_URL) {
     return; // default: straight to network
+  }
+
+  // Harbor data: cache the read-only board endpoints stale-while-revalidate in
+  // the api cache so the dashboard paints offline (SVD-13). Everything else under
+  // /api/ stays network-only.
+  if (url.pathname.startsWith('/api/')) {
+    if (isCacheableApiPath(url.pathname)) {
+      event.respondWith(staleWhileRevalidate(request, event, API_CACHE_NAME));
+    }
+    return; // non-cacheable /api: straight to network
   }
 
   // The kill switch rides the fetch path: check it on every navigation, since

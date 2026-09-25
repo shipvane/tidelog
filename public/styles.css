@@ -111,6 +111,23 @@ body {
   margin-right: 0.35rem;
 }
 
+.badge-offline {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.badge-offline::before {
+  content: '○';
+  margin-right: 0.35rem;
+}
+
+.synced {
+  font-size: 0.72rem;
+  color: #d7e3ee;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- layout ---------- */
 
 .container {
@@ -610,6 +627,25 @@ td.notif-retry {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.modal-message {
+  border-radius: 6px;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.modal-message-warn {
+  background: var(--brass-soft);
+  color: var(--brass);
+  border: 1px solid var(--brass);
+}
+
+.modal-message-error {
+  background: var(--red-soft);
+  color: var(--red);
+  border: 1px solid var(--red);
 }
 
 .vessel-info {
