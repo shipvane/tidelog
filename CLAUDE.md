@@ -85,6 +85,15 @@ demo and guarded in `server.js`. A feature that only works by writing will appea
 broken in production while passing every local test. If you add a mutating route,
 check how the guard treats it and say so in the PR.
 
+**The service worker has a kill switch, and this is how to pull it.** A registered
+SW is sticky: a bad one keeps serving itself to returning visitors, and the next
+deploy does not fix that. To turn it off, add `- name: TIDELOG_SW_KILL` /
+`value: 'true'` under `run.env` in `apprunner.yaml` and push to `main`. Visitors
+drop the worker and its caches on their next navigation, and pages stop
+registering it. Remove the entry and push to restore it. That is an operator's
+incident action; the `apprunner.yaml` rule below is about feature work. Details in
+the header of `public/sw.js`.
+
 **The IMO checksum is real.** `lib/manifest.js` validates it. Test fixtures need
 genuine check digits — inventing a 7-digit number will fail validation and the
 failure will look like a bug in your change.

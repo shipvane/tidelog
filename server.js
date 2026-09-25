@@ -47,6 +47,16 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'tidelog' });
 });
 
+// Service-worker kill switch (see public/sw.js). The SW polls this network-first
+// on every navigation; `{ kill: true }` makes it unregister and drop its caches.
+// A stuck/broken SW is sticky and is NOT fixed by the next deploy, so the escape
+// hatch is an env flag: deploy with TIDELOG_SW_KILL=true and returning visitors
+// self-heal on their next navigation. Deliberately outside /api so it is never
+// swept up by the read-only write guard or an API cache rule.
+app.get('/sw-kill', (req, res) => {
+  res.json({ kill: process.env.TIDELOG_SW_KILL === 'true' });
+});
+
 app.use('/api/arrivals', arrivalsRouter);
 app.use('/api/berths', berthsRouter);
 app.use('/api/tides', tidesRouter);
