@@ -4,6 +4,7 @@
   --navy-700: #17364f;
   --ink: #16283a;
   --muted: #5b7186;
+  --topbar-ink: #d7e3ee;
   --line: #dbe4ec;
   --paper: #f4f7fa;
   --card: #ffffff;
@@ -90,7 +91,7 @@ body {
 .clock {
   font-variant-numeric: tabular-nums;
   font-size: 1.15rem;
-  color: #d7e3ee;
+  color: var(--topbar-ink);
 }
 
 .badge {
@@ -109,6 +110,23 @@ body {
 .badge-live::before {
   content: '●';
   margin-right: 0.35rem;
+}
+
+.badge-offline {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.badge-offline::before {
+  content: '○';
+  margin-right: 0.35rem;
+}
+
+.synced {
+  font-size: 0.72rem;
+  color: var(--topbar-ink);
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- layout ---------- */
@@ -610,6 +628,25 @@ td.notif-retry {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.modal-message {
+  border-radius: 6px;
+  padding: 0.7rem 0.85rem;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.modal-message-warn {
+  background: var(--brass-soft);
+  color: var(--brass);
+  border: 1px solid var(--brass);
+}
+
+.modal-message-error {
+  background: var(--red-soft);
+  color: var(--red);
+  border: 1px solid var(--red);
 }
 
 .vessel-info {

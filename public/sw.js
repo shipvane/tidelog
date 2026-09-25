@@ -13,8 +13,18 @@
  *     writes the fresh copy back. On this repo a push to `main` IS the deploy
  *     with no staging, so a returning visitor MUST eventually see a new build —
  *     pure cache-first would strand them on an old shell until every tab closed.
- *   - `/api/*`: network-only, never cached. Harbor data (berths, tides) served
- *     stale is worse than an error; that is SVD-13's problem, not this slice's.
+ *   - Harbor data (`GET /api/arrivals`, `/api/berths`, `/api/tides/*`):
+ *     NETWORK-FIRST with a cache fallback, in a SEPARATE api cache, so the board
+ *     still paints offline (SVD-13). Not stale-while-revalidate: SWR answers from
+ *     cache even when online, so the board would run one refresh behind and a
+ *     returning visitor would see yesterday's berths as current. Every copy the
+ *     SW stores carries `X-TideLog-Fetched-At` (when it really came off the
+ *     network), and the page shows THAT as "last synced", never the time it
+ *     happened to ask. Silent staleness on a berth board is exactly the failure
+ *     this app exists to prevent.
+ *   - Every other `/api/*` (webhooks, stats, health) and all writes: network-only.
+ *     A stale delivery log, or a write that silently "succeeds" from cache, is
+ *     worse than an honest error.
  *   - New versions activate promptly via skipWaiting/clients.claim so a deploy
  *     reaches open tabs without waiting for all of them to close.
  *
@@ -44,6 +54,34 @@
 
 const CACHE_VERSION = 'v0.2.0-shell-1';
 const CACHE_NAME = `tidelog-${CACHE_VERSION}`;
+
+// Harbor data lives in its own cache, kept apart from the shell so a shell
+// version bump does not wipe cached board data and vice versa. Both are current
+// caches the activate handler must preserve. The kill path deletes EVERY cache
+// (see checkKillSwitch), so lifting the "never cache /api" rule does not create a
+// cache the kill switch cannot reach — API data is dropped with the rest.
+// Versioned on its own, NOT with CACHE_VERSION: a shell change bumps that, and
+// tying the two would make every shell deploy delete everyone's offline harbor
+// snapshot. Bump this only when the cached data's format changes.
+const API_CACHE_VERSION = 'v1';
+const API_CACHE_NAME = `tidelog-api-${API_CACHE_VERSION}`;
+
+// Only the board's own reads are cached for offline use: the two list endpoints
+// EXACTLY, plus the tide calculations. Exact matters: `/api/arrivals/:id/dues`,
+// `/api/arrivals/export.csv` and `/api/berths/:id/schedule` share the prefixes
+// but change after a write, and a stale dues figure looks authoritative. Writes
+// are excluded by method before this applies; webhooks/stats/health stay
+// network-only on purpose (a stale delivery log is misleading, not useful).
+const CACHEABLE_API_EXACT = ['/api/arrivals', '/api/berths'];
+const CACHEABLE_API_PREFIX = '/api/tides/';
+function isCacheableApiPath(pathname) {
+  return CACHEABLE_API_EXACT.includes(pathname) || pathname.startsWith(CACHEABLE_API_PREFIX);
+}
+
+// Header the SW stamps on every harbor-data copy it stores: when that copy was
+// actually fetched from the network. The page reads it to show the data's real
+// age. A response without it came straight from the network, so it is current.
+const FETCHED_AT_HEADER = 'X-TideLog-Fetched-At';
 
 // The app shell. `/` is the document (index.html); it is NOT listed separately
 // as `/index.html` — they are the same resource and two entries would cache one
@@ -80,9 +118,12 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((names) =>
-        Promise.all(names.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name)))
-      )
+      .then((names) => {
+        const current = new Set([CACHE_NAME, API_CACHE_NAME]);
+        return Promise.all(
+          names.filter((name) => !current.has(name)).map((name) => caches.delete(name))
+        );
+      })
       .then(() => self.clients.claim())
   );
 });
@@ -116,7 +157,9 @@ async function checkKillSwitch() {
  * in the background fetch a fresh copy and write it back so the NEXT load is
  * current. `event.waitUntil` keeps the worker alive for that background write
  * (and makes it observable to tests). Falls back to the cached shell for a
- * navigation when the network is unreachable and nothing else matched.
+ * navigation when the network is unreachable and nothing else matched. Shell
+ * only: harbor data is network-first (networkFirstData), because SWR would
+ * present cached data as current.
  */
 async function staleWhileRevalidate(request, event) {
   const cache = await caches.open(CACHE_NAME);
@@ -153,6 +196,41 @@ async function staleWhileRevalidate(request, event) {
   return new Response('Offline', { status: 503, statusText: 'Offline' });
 }
 
+/**
+ * Network-first for harbor data, with the last good copy as the offline
+ * fallback. A fresh response is stamped with its fetch time before it is stored
+ * and returned; an offline answer comes from the cache still carrying the time
+ * it was originally fetched, so the page can say how old it is.
+ */
+async function networkFirstData(request) {
+  const cache = await caches.open(API_CACHE_NAME);
+  try {
+    const response = await fetch(request);
+    if (!response || !response.ok || response.type !== 'basic') return response;
+    const body = await response.text();
+    const init = {
+      status: response.status,
+      statusText: response.statusText,
+      headers: {
+        'Content-Type': response.headers.get('Content-Type') || 'application/json',
+        [FETCHED_AT_HEADER]: String(Date.now()),
+      },
+    };
+    // Same kill guard as the shell cache: never write back once the switch has
+    // fired, or this would recreate a cache the kill just deleted.
+    if (!killed) await cache.put(request, new Response(body, init));
+    return new Response(body, init);
+  } catch {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    return new Response(JSON.stringify({ error: 'offline' }), {
+      status: 503,
+      statusText: 'Offline',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
 
@@ -167,9 +245,19 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  // NEVER cache /api/*, the SW itself, or the kill sentinel.
-  if (url.pathname.startsWith('/api/') || url.pathname === '/sw.js' || url.pathname === KILL_URL) {
+  // The SW script and the kill sentinel are always network-only, never cached.
+  if (url.pathname === '/sw.js' || url.pathname === KILL_URL) {
     return; // default: straight to network
+  }
+
+  // Harbor data: network-first with a cache fallback, so the dashboard paints
+  // offline (SVD-13) without ever showing cached data as current while online.
+  // Everything else under /api/ stays network-only.
+  if (url.pathname.startsWith('/api/')) {
+    if (isCacheableApiPath(url.pathname)) {
+      event.respondWith(networkFirstData(request));
+    }
+    return; // non-cacheable /api: straight to network
   }
 
   // The kill switch rides the fetch path: check it on every navigation, since

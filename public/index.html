@@ -29,6 +29,7 @@
         </div>
         <div class="topbar-meta">
           <span class="clock" id="clock">--:--</span>
+          <span class="synced" id="last-synced" hidden></span>
           <span class="badge badge-live" id="status-badge">LIVE</span>
         </div>
       </div>
@@ -159,6 +160,7 @@
           <div id="modal-vessel-info" class="vessel-info"></div>
           <div id="modal-berths-list" class="berths-list"></div>
           <div id="modal-no-berths" class="empty" hidden>No compatible berths available</div>
+          <div id="modal-message" class="modal-message" role="alert" hidden></div>
         </div>
         <div class="modal-foot">
           <button type="button" class="btn btn-secondary" id="modal-cancel">Cancel</button>

@@ -89,10 +89,24 @@ describe('service worker — served & static', () => {
     expect(precached).not.toContain('/index.html');
   });
 
-  test('sw.js never caches /api/* and has a CACHE_VERSION', () => {
+  test('sw.js routes /api/ and has a CACHE_VERSION (harbor data cached, rest network-only)', () => {
     const sw = readSw();
     expect(sw).toContain("url.pathname.startsWith('/api/')");
     expect(sw).toMatch(/const CACHE_VERSION = ['"]v[\d.]+[\w-]*['"]/);
+    // SVD-13: read-only board endpoints are cached for offline reads, in a
+    // separate api cache; webhooks/stats/health are not in the allowlist.
+    expect(sw).toContain('API_CACHE_NAME');
+    expect(sw).toContain("'/api/arrivals'");
+    expect(sw).toContain("'/api/berths'");
+    expect(sw).toContain("'/api/tides/'");
+    expect(sw).not.toContain("'/api/webhooks'");
+  });
+
+  test('the api cache is versioned apart from the shell, so a shell bump keeps offline data', () => {
+    const sw = readSw();
+    expect(sw).toMatch(/const API_CACHE_VERSION = ['"][\w.-]+['"]/);
+    expect(sw).toContain('const API_CACHE_NAME = `tidelog-api-${API_CACHE_VERSION}`');
+    expect(sw).not.toMatch(/API_CACHE_NAME = `[^`]*\$\{CACHE_VERSION\}/);
   });
 
   test('sw.js uses skipWaiting + clients.claim so a deploy reaches open tabs', () => {
@@ -144,13 +158,21 @@ function toPath(input) {
 class FakeResponse {
   constructor(body, init = {}) {
     this._body = body;
-    this.ok = init.ok !== undefined ? init.ok : true;
+    this.ok = init.ok !== undefined ? init.ok : (init.status || 200) < 400;
     this.status = init.status || 200;
     this.statusText = init.statusText || '';
     this.type = init.type || 'basic';
+    this._headers = {};
+    for (const [k, v] of Object.entries(init.headers || {})) this._headers[k.toLowerCase()] = v;
+    this.headers = { get: (name) => this._headers[String(name).toLowerCase()] ?? null };
   }
   clone() {
-    return new FakeResponse(this._body, { ok: this.ok, status: this.status, type: this.type });
+    return new FakeResponse(this._body, {
+      ok: this.ok,
+      status: this.status,
+      type: this.type,
+      headers: this._headers,
+    });
   }
   async text() {
     return this._body;
@@ -302,18 +324,162 @@ describe('service worker — behaviour (driven directly)', () => {
     expect((await env.caches.keys()).length).toBe(1);
   });
 
-  test('/api/* is passed straight to network — never intercepted or cached', async () => {
+  test('non-cacheable /api/* (webhooks) is passed straight to network — never intercepted or cached', async () => {
     const fetchImpl = jest.fn(async () => new FakeResponse('{}', { type: 'basic' }));
     const env = buildEnv(fetchImpl);
     await warm(env);
 
-    const ev = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    const ev = makeEvent({
+      url: 'http://localhost/api/webhooks/deliveries',
+      method: 'GET',
+      mode: 'cors',
+    });
     env.listeners.fetch(ev);
-    // The handler returns before calling respondWith for /api, so the browser
-    // does its own default network fetch.
+    // The handler returns before calling respondWith for a non-allowlisted /api
+    // path, so the browser does its own default network fetch.
     expect(ev._response).toBeUndefined();
-    const cached = await env.caches.match('/api/berths');
+    const cached = await env.caches.match('/api/webhooks/deliveries');
     expect(cached).toBeUndefined();
+  });
+
+  test('harbor data (/api/berths) is cached, then served from cache when offline (SVD-13)', async () => {
+    let online = true;
+    const fetchImpl = jest.fn(async () => {
+      if (!online) throw new Error('offline');
+      return new FakeResponse('{"berths":["B1"]}', { type: 'basic' });
+    });
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+
+    // Cold: nothing cached yet, so the board comes from the network and is
+    // written into the api cache for next time.
+    const first = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(first);
+    const firstServed = await first._response;
+    expect(await firstServed.text()).toBe('{"berths":["B1"]}');
+    await Promise.all(first._waits);
+    const cached = await env.caches.match('/api/berths');
+    expect(await cached.text()).toBe('{"berths":["B1"]}');
+
+    // Now offline: the same read still resolves, served from cache rather than a
+    // network error — this is the whole point of SVD-13.
+    online = false;
+    const offline = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(offline);
+    const offlineServed = await offline._response;
+    expect(await offlineServed.text()).toBe('{"berths":["B1"]}');
+  });
+
+  test('online, harbor data comes from the NETWORK even when a cached copy exists', async () => {
+    // The #56 review: stale-while-revalidate answered from cache while online, so
+    // the board ran one refresh behind and a returning visitor saw yesterday's
+    // berths under a LIVE badge. Network-first must return the fresh copy.
+    let version = 'old';
+    const fetchImpl = jest.fn(
+      async () => new FakeResponse(`{"berths":["${version}"]}`, { type: 'basic' })
+    );
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+
+    const first = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(first);
+    await first._response;
+
+    version = 'new';
+    const second = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(second);
+    expect(await (await second._response).text()).toBe('{"berths":["new"]}');
+  });
+
+  test('an offline answer carries the time the data was really fetched', async () => {
+    // What makes an honest "last synced" possible: the cached copy is stamped
+    // when it came off the network, and keeps that stamp when served offline.
+    let online = true;
+    const fetchImpl = jest.fn(async () => {
+      if (!online) throw new Error('offline');
+      return new FakeResponse('{"berths":[]}', { type: 'basic' });
+    });
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+
+    const t0 = 1_700_000_000_000;
+    const now = jest.spyOn(Date, 'now').mockReturnValue(t0);
+    try {
+      const warmRead = makeEvent({
+        url: 'http://localhost/api/berths',
+        method: 'GET',
+        mode: 'cors',
+      });
+      env.listeners.fetch(warmRead);
+      expect((await warmRead._response).headers.get('X-TideLog-Fetched-At')).toBe(String(t0));
+
+      now.mockReturnValue(t0 + 86_400_000); // a day later, and offline
+      online = false;
+      const later = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+      env.listeners.fetch(later);
+      const served = await later._response;
+      expect(served.headers.get('X-TideLog-Fetched-At')).toBe(String(t0));
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  test.each([
+    '/api/arrivals/a1/dues',
+    '/api/arrivals/export.csv',
+    '/api/berths/B1/schedule',
+    '/api/webhooks/deliveries',
+  ])('%s is NOT intercepted or cached (only the board reads are)', async (pathname) => {
+    // Dues, exports and schedules share the board's prefixes but change after a
+    // write; served stale they look authoritative and are silently wrong.
+    const fetchImpl = jest.fn(async () => new FakeResponse('{}', { type: 'basic' }));
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+    const ev = makeEvent({ url: `http://localhost${pathname}`, method: 'GET', mode: 'cors' });
+    env.listeners.fetch(ev);
+    expect(ev._response).toBeUndefined();
+    expect(await env.caches.match(pathname)).toBeUndefined();
+  });
+
+  test('the tide calculations under /api/tides/ ARE cached for offline', async () => {
+    const fetchImpl = jest.fn(async () => new FakeResponse('{"windows":[]}', { type: 'basic' }));
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+    const ev = makeEvent({
+      url: 'http://localhost/api/tides/windows?draftM=8',
+      method: 'GET',
+      mode: 'cors',
+    });
+    env.listeners.fetch(ev);
+    expect(ev._response).toBeDefined();
+    await ev._response;
+    expect(await env.caches.match('/api/tides/windows')).toBeDefined();
+  });
+
+  test('the kill switch also drops the api data cache, not just the shell', async () => {
+    // SVD-13 lifts the "never cache /api" rule; the kill path must still leave a
+    // clean slate. It deletes EVERY cache, so the api cache goes with the shell.
+    const fetchImpl = jest.fn(async (input) => {
+      if (toPath(input) === '/sw-kill') return new FakeResponse(JSON.stringify({ kill: true }));
+      return new FakeResponse('{"berths":[]}', { type: 'basic' });
+    });
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+
+    // Populate the api cache so there are two caches to clear.
+    const api = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(api);
+    await api._response;
+    await Promise.all(api._waits);
+    expect((await env.caches.keys()).length).toBe(2); // shell + api
+
+    // A navigation fires the kill switch.
+    const nav = makeEvent({ url: 'http://localhost/', method: 'GET', mode: 'navigate' });
+    env.listeners.fetch(nav);
+    await Promise.all(nav._waits);
+
+    expect(env.self.registration.unregister).toHaveBeenCalled();
+    expect((await env.caches.keys()).length).toBe(0);
   });
 
   test('after the kill, the worker stops serving and cannot recreate its cache', async () => {

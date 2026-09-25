@@ -32,6 +32,72 @@ async function fetchJson(url) {
 }
 
 /**
+ * Harbor-data read that also reports WHEN the data was fetched. The service
+ * worker stamps every copy it stores with `X-TideLog-Fetched-At`, so an offline
+ * answer from its cache says how old it is. No header means the response came
+ * straight off the network, which makes it current as of now.
+ */
+async function fetchData(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  const stamped = Number(res.headers && res.headers.get && res.headers.get('X-TideLog-Fetched-At'));
+  return { data: await res.json(), fetchedAt: stamped > 0 ? stamped : Date.now() };
+}
+
+// SVD-13 offline support. The service worker serves harbor data from a cache
+// when offline, so a read still SUCCEEDS with no network — which means fetch
+// success can no longer tell us we are live. `navigator.onLine` and the
+// online/offline events are the source of truth for the connection badge. The
+// last-synced time is the fetch time of the OLDEST data on screen, read off the
+// response itself (see fetchData), never the moment the page asked.
+const LAST_SYNCED_KEY = 'tidelog:last-synced';
+
+function loadLastSynced() {
+  try {
+    const raw = localStorage.getItem(LAST_SYNCED_KEY);
+    return raw ? Number(raw) : null;
+  } catch {
+    return null; // storage disabled (private mode) — degrade to no timestamp
+  }
+}
+
+function saveLastSynced(ts) {
+  try {
+    localStorage.setItem(LAST_SYNCED_KEY, String(ts));
+  } catch {
+    // Non-fatal; the in-memory value still drives this session's display.
+  }
+}
+
+let lastSyncedAt = loadLastSynced();
+
+/** Reflect the real connection state and the age of the data on screen. */
+function renderSyncState() {
+  const online = navigator.onLine;
+
+  // Every lookup here is guarded. The shell files revalidate independently, so
+  // after a deploy a returning visitor can run this app.js against an older
+  // cached index.html that predates these elements. Throwing here would stop the
+  // dashboard loading at all; skipping the label just leaves it unshown.
+  const badge = document.getElementById('status-badge');
+  if (badge) {
+    badge.textContent = online ? 'LIVE' : 'OFFLINE';
+    badge.className = online ? 'badge badge-live' : 'badge badge-offline';
+  }
+
+  const synced = document.getElementById('last-synced');
+  if (!synced) return;
+  if (lastSyncedAt) {
+    synced.hidden = false;
+    synced.textContent = `Synced ${fmtTime(lastSyncedAt)}`;
+    synced.title = `Harbor data last synced ${new Date(lastSyncedAt).toLocaleString()}`;
+  } else {
+    synced.hidden = true;
+    synced.textContent = '';
+  }
+}
+
+/**
  * Filter berths to only those that are compatible with a vessel's
  * length and draft, and are not out of service.
  */
@@ -53,12 +119,34 @@ function filterCompatibleBerths(berths, vessel) {
 }
 
 /**
+ * Show or clear a message inside the assign modal. `kind` styles it
+ * ('warn' | 'error'); passing no text hides it.
+ */
+function setModalMessage(text, kind) {
+  const box = document.getElementById('modal-message');
+  // Missing on an older cached index.html (see renderSyncState). The write is
+  // still refused; only the explanation goes unshown until the next load.
+  if (!box) return;
+  if (!text) {
+    box.hidden = true;
+    box.textContent = '';
+    box.className = 'modal-message';
+    return;
+  }
+  box.hidden = false;
+  box.textContent = text;
+  box.className = `modal-message modal-message-${kind || 'warn'}`;
+}
+
+/**
  * Open the assign berth modal for a vessel.
  * Fetches compatible berths and displays them for selection.
  */
 async function openAssignModal(arrival, allBerths) {
   const modal = document.getElementById('assign-modal');
   let selectedBerthId = null;
+
+  setModalMessage(null); // clear any message left from a previous attempt
 
   // Filter berths for physical compatibility
   const compatibleBerths = filterCompatibleBerths(allBerths, {
@@ -142,6 +230,19 @@ async function openAssignModal(arrival, allBerths) {
   confirmBtn.onclick = async () => {
     if (!selectedBerthId) return;
 
+    // Refuse writes while offline rather than half-building a sync queue: a
+    // queued berth assignment can be invalid on replay (the berth may be taken),
+    // and refusing double bookings is the whole point of TideLog. The selection
+    // is left intact so nothing the operator entered is lost — reconnect and
+    // confirm again. (See SVD-13: writes are deliberately not queued.)
+    if (!navigator.onLine) {
+      setModalMessage(
+        "You're offline — a berth assignment needs a live connection. Your selection is kept; reconnect and confirm again.",
+        'warn'
+      );
+      return;
+    }
+
     try {
       const res = await fetch(`/api/arrivals/${arrival.id}/assign-berth`, {
         method: 'POST',
@@ -156,10 +257,15 @@ async function openAssignModal(arrival, allBerths) {
         handleCancel();
         await refresh(); // Refresh the entire page to show the updated assignment
       } else {
-        alert(`Failed to assign berth: ${res.status} ${res.statusText}`);
+        setModalMessage(`Failed to assign berth: ${res.status} ${res.statusText}`, 'error');
       }
-    } catch (err) {
-      alert(`Error assigning berth: ${err.message}`);
+    } catch {
+      // The connection dropped mid-submit. Treat it like offline: keep the
+      // selection so the operator can retry once they are back online.
+      setModalMessage(
+        "Couldn't reach the harbor server — your connection may have dropped. Your selection is kept; try again in a moment.",
+        'warn'
+      );
     }
   };
 
@@ -393,11 +499,12 @@ async function refreshNotifications() {
 async function refresh() {
   try {
     const arrivalsUrl = buildArrivalsUrl();
-    const [arrivalsRes, berthsRes, windowsRes] = await Promise.all([
-      fetchJson(arrivalsUrl),
-      fetchJson('/api/berths'),
-      fetchJson(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
+    const reads = await Promise.all([
+      fetchData(arrivalsUrl),
+      fetchData('/api/berths'),
+      fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
+    const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
     renderArrivals(arrivalsRes.arrivals, berthsRes.berths);
     renderBerths(berthsRes.berths);
@@ -410,11 +517,18 @@ async function refresh() {
     document.getElementById('stat-inport').textContent = arrivals.filter(
       (a) => a.status === 'arrived'
     ).length;
-    document.getElementById('status-badge').textContent = 'LIVE';
+
+    // The board is only as fresh as its oldest read, so that is the time shown.
+    // It comes from the responses themselves: offline, these are cached copies
+    // still stamped with when they were really fetched.
+    lastSyncedAt = Math.min(...reads.map((r) => r.fetchedAt));
+    saveLastSynced(lastSyncedAt);
   } catch {
-    document.getElementById('status-badge').textContent = 'OFFLINE';
+    // Reads failed (offline with a cold cache, or a transient error). Keep the
+    // last good render; renderSyncState() below shows the real connection state.
   }
 
+  renderSyncState();
   await refreshNotifications();
 }
 
@@ -426,7 +540,18 @@ document.getElementById('type-filter').addEventListener('change', () => {
   refresh();
 });
 
+// Reconnecting pulls fresh data without a manual reload; going offline flips the
+// badge immediately even though the last render is still on screen.
+window.addEventListener('online', () => {
+  renderSyncState();
+  refresh();
+});
+window.addEventListener('offline', () => {
+  renderSyncState();
+});
+
 tickClock();
 setInterval(tickClock, 1000);
+renderSyncState(); // reflect stored last-synced + connection state before the first fetch
 refresh();
 setInterval(refresh, REFRESH_MS);
