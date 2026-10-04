@@ -426,6 +426,66 @@ function renderArrivals(arrivals, berths) {
     `${arrivals.length} vessel${arrivals.length === 1 ? '' : 's'} logged`;
 }
 
+/**
+ * Show or clear a message in the berth board panel. `kind` styles it
+ * ('warn' | 'error'); passing no text hides it. Guarded for an older cached
+ * index.html that predates the element (see renderSyncState).
+ */
+function setBerthsMessage(text, kind) {
+  const box = document.getElementById('berths-message');
+  if (!box) return;
+  if (!text) {
+    box.hidden = true;
+    box.textContent = '';
+    box.className = 'panel-message';
+    return;
+  }
+  box.hidden = false;
+  box.textContent = text;
+  box.className = `panel-message panel-message-${kind || 'warn'}`;
+}
+
+/**
+ * Log the departure of a vessel occupying a berth, then refresh so the board,
+ * the arrivals log and the Berths-Occupied stat update together (SVD-18/SVD-19).
+ * The vessel stays in the log as `departed`; the server releases the berth.
+ */
+async function departVessel(arrivalId) {
+  setBerthsMessage(null); // clear any message from a previous attempt
+
+  // Refuse while offline rather than queue: a departure logged against a stale
+  // board could be wrong, and the live demo refuses writes anyway (SVD-13/20).
+  if (!navigator.onLine) {
+    setBerthsMessage(
+      "You're offline — logging a departure needs a live connection. Reconnect and try again.",
+      'warn'
+    );
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/arrivals/${arrivalId}/depart`, { method: 'POST' });
+    if (res.ok) {
+      await refresh();
+    } else {
+      // Show the server's own words — the read-only 403 message, or a 409 when
+      // the vessel is no longer in a departable state — never a bare code or
+      // silence (SVD-20).
+      setBerthsMessage(
+        await readErrorMessage(res, 'The departure could not be logged. Please try again.'),
+        'error'
+      );
+    }
+  } catch {
+    // The connection dropped mid-request. Say so rather than leaving the click
+    // unexplained.
+    setBerthsMessage(
+      "Couldn't reach the harbor server to log the departure — check your connection and try again.",
+      'warn'
+    );
+  }
+}
+
 function renderBerths(berths) {
   const list = document.getElementById('berth-list');
   list.replaceChildren();
@@ -443,6 +503,12 @@ function renderBerths(berths) {
     item.appendChild(info);
 
     const occupant = el('div', 'berth-occupant');
+    // Render every occupant, not just the first: a rafting berth can hold
+    // several vessels (lib/berths.js) and the board used to show only
+    // berth.occupant, hiding the rest. occupants comes straight from the berths
+    // endpoint, NOT the type-filtered arrivals list, so a filtered-out vessel
+    // keeps its tile and its Depart button (SVD-18).
+    const occupants = berth.occupants || (berth.occupant ? [berth.occupant] : []);
     if (berth.outOfService) {
       occupant.textContent = '🔧 Maintenance';
       if (berth.maintenanceReason) {
@@ -450,9 +516,22 @@ function renderBerths(berths) {
         reason.className = 'maint-reason';
         occupant.appendChild(reason);
       }
-    } else if (berth.occupant) {
-      occupant.appendChild(document.createTextNode(berth.occupant.vesselName));
-      occupant.appendChild(el('span', 'until', `until ${fmtDayTime(berth.occupant.to)}`));
+    } else if (occupants.length > 0) {
+      for (const occ of occupants) {
+        const line = el('div', 'occupant-line');
+        line.appendChild(document.createTextNode(occ.vesselName));
+        line.appendChild(el('span', 'until', `until ${fmtDayTime(occ.to)}`));
+        // Depart only for occupants the /depart endpoint accepts. An expected
+        // (not-yet-arrived) vessel has no departure to log, and there is no
+        // unassign endpoint — leaving that out of scope (SVD-18).
+        if (occ.status === 'arrived' || occ.status === 'overdue') {
+          const departBtn = el('button', 'btn-depart', 'Depart');
+          departBtn.type = 'button';
+          departBtn.addEventListener('click', () => departVessel(occ.arrivalId));
+          line.appendChild(departBtn);
+        }
+        occupant.appendChild(line);
+      }
     } else {
       occupant.textContent = 'Available';
     }

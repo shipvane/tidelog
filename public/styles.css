@@ -481,6 +481,34 @@ td .imo {
   color: var(--muted);
 }
 
+/* One line per occupant so a rafted berth lists each vessel with its own
+   Depart control (SVD-18). */
+.occupant-line + .occupant-line {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px dashed var(--line);
+}
+
+.btn-depart {
+  display: inline-block;
+  margin-top: 0.3rem;
+  background: var(--brass-soft);
+  color: var(--brass);
+  border: 1px solid var(--brass);
+  padding: 0.2rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  border-radius: 6px;
+}
+
+.btn-depart:hover {
+  background: var(--brass);
+  color: #fff;
+  border-color: var(--brass);
+}
+
 .maint-reason {
   display: block;
   font-size: 0.7rem;

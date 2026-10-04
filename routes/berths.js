@@ -23,13 +23,21 @@ function berthView(berth, at) {
           to: occupant.to,
         }
       : null,
-    // Include all occupants for rafting support
-    occupants: occupants.map((o) => ({
-      arrivalId: o.arrivalId,
-      vesselName: o.vesselName,
-      from: o.from,
-      to: o.to,
-    })),
+    // Include all occupants for rafting support. Each carries the owning
+    // arrival's current status (additive — the fields above and the legacy
+    // single `occupant` are unchanged) so the board can offer Depart only for
+    // vessels the /depart endpoint will accept (arrived/overdue), without
+    // joining to the type-filtered arrivals list on the client (SVD-18).
+    occupants: occupants.map((o) => {
+      const arrival = db.state.arrivals.get(o.arrivalId);
+      return {
+        arrivalId: o.arrivalId,
+        vesselName: o.vesselName,
+        from: o.from,
+        to: o.to,
+        status: arrival ? arrival.status : null,
+      };
+    }),
   };
 }
 

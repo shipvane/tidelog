@@ -388,6 +388,59 @@ describe('/api/berths', () => {
     expect(b1.occupant.vesselName).toBe('MV Northern Star');
   });
 
+  test('GET occupants carry the arrival status (SVD-18), legacy occupant unchanged', async () => {
+    const { body } = await request(app).post('/api/arrivals').send(validManifest());
+    const from = new Date(Date.now() - 3600_000).toISOString();
+    const to = new Date(Date.now() + 3600_000).toISOString();
+    await request(app).post(`/api/arrivals/${body.arrival.id}/assign-berth`).send({ from, to });
+
+    let res = await request(app).get('/api/berths');
+    let b1 = res.body.berths.find((b) => b.id === 'B1');
+    // An expected vessel has no departure to log — the board uses this to hide
+    // the Depart button.
+    expect(b1.occupants).toHaveLength(1);
+    expect(b1.occupants[0]).toMatchObject({
+      arrivalId: body.arrival.id,
+      vesselName: 'MV Northern Star',
+      status: 'expected',
+    });
+    // The legacy single occupant stays exactly as it was (no status field).
+    expect(b1.occupant).toEqual({
+      arrivalId: body.arrival.id,
+      vesselName: 'MV Northern Star',
+      from,
+      to,
+    });
+
+    await request(app).post(`/api/arrivals/${body.arrival.id}/arrive`).send({});
+    res = await request(app).get('/api/berths');
+    b1 = res.body.berths.find((b) => b.id === 'B1');
+    expect(b1.occupants[0].status).toBe('arrived');
+  });
+
+  test('GET lists every occupant of a rafted berth with their statuses (SVD-18)', async () => {
+    const from = new Date(Date.now() - 3600_000).toISOString();
+    const to = new Date(Date.now() + 3600_000).toISOString();
+    const small = { vesselType: 'fishing', lengthM: 15, draftM: 2.5 };
+
+    const a = await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Raft One', imo: null, ...small }));
+    await request(app).post(`/api/arrivals/${a.body.arrival.id}/assign-berth`).send({ from, to });
+    await request(app).post(`/api/arrivals/${a.body.arrival.id}/arrive`).send({});
+
+    const b = await request(app)
+      .post('/api/arrivals')
+      .send(validManifest({ vesselName: 'Raft Two', imo: null, ...small }));
+    await request(app).post(`/api/arrivals/${b.body.arrival.id}/assign-berth`).send({ from, to });
+
+    const res = await request(app).get('/api/berths');
+    const b6 = res.body.berths.find((berth) => berth.id === 'B6');
+    expect(b6.occupants).toHaveLength(2);
+    const byName = Object.fromEntries(b6.occupants.map((o) => [o.vesselName, o.status]));
+    expect(byName).toEqual({ 'Raft One': 'arrived', 'Raft Two': 'expected' });
+  });
+
   test('GET /:id/schedule returns assignments ordered by start', async () => {
     const { body } = await request(app).post('/api/arrivals').send(validManifest());
     await request(app)

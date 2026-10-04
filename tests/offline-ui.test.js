@@ -131,6 +131,32 @@ const OPEN_BERTH = {
   occupied: false,
   outOfService: false,
 };
+// A berth holding one arrived vessel, shaped like the real /api/berths payload
+// (berthView in routes/berths.js): the legacy single `occupant` plus the
+// `occupants` array whose entries carry a status (SVD-18).
+const OCCUPIED_BERTH = {
+  id: 'B1',
+  name: 'North Quay',
+  lengthM: 100,
+  depthM: 8,
+  occupied: true,
+  outOfService: false,
+  occupant: {
+    arrivalId: 'a1',
+    vesselName: 'MV Test',
+    from: '2026-03-01T06:00:00Z',
+    to: '2026-03-01T20:00:00Z',
+  },
+  occupants: [
+    {
+      arrivalId: 'a1',
+      vesselName: 'MV Test',
+      from: '2026-03-01T06:00:00Z',
+      to: '2026-03-01T20:00:00Z',
+      status: 'arrived',
+    },
+  ],
+};
 const DELIVERY = {
   id: 'd1',
   attemptedAt: '2026-03-01T14:00:00Z',
@@ -286,18 +312,26 @@ describe('SVD-13 dashboard offline behaviour', () => {
         .replace(/<span[^>]*id="last-synced"[^>]*><\/span>/, '')
         .replace(/<div[^>]*id="modal-message"[^>]*><\/div>/, '')
         .replace(/<div[^>]*id="readonly-notice"[^>]*><\/div>/, '')
-        .replace(/<div[^>]*id="notifications-message"[^>]*><\/div>/, '');
+        .replace(/<div[^>]*id="notifications-message"[^>]*><\/div>/, '')
+        .replace(/<div[^>]*id="berths-message"[^>]*><\/div>/, '');
     const { window, calls } = await bootApp({
       online: true,
       readOnly: true, // even in demo mode, a missing notice must not break boot
       arrivals: [EXPECTED_VESSEL],
-      berths: [OPEN_BERTH],
+      berths: [OCCUPIED_BERTH], // a Depart against a missing #berths-message must not break boot
       html: oldMarkup,
     });
     expect(window.document.getElementById('last-synced')).toBeNull();
     expect(window.document.getElementById('modal-message')).toBeNull();
     expect(window.document.getElementById('readonly-notice')).toBeNull();
     expect(window.document.getElementById('notifications-message')).toBeNull();
+    expect(window.document.getElementById('berths-message')).toBeNull();
+    // The Depart button still renders and clicking it does not throw even though
+    // the message element is gone (setBerthsMessage guards for it).
+    const departBtn = window.document.querySelector('.btn-depart');
+    expect(departBtn).not.toBeNull();
+    departBtn.click();
+    await flush();
     expect(calls.some((c) => c.url.includes('/api/arrivals'))).toBe(true);
     expect(window.document.getElementById('arrivals-body').textContent).toContain('MV Test');
     expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
@@ -627,5 +661,177 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     expect(board).toContain('MV Fresh');
     expect(board).not.toContain('MV Cached');
     expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+  });
+});
+
+describe('SVD-18 Depart action on occupied berths', () => {
+  // An occupant as the real /api/berths payload shapes it (berthView): a status
+  // alongside the identity fields. The Depart button is gated on this status.
+  function occupant(arrivalId, vesselName, status) {
+    return { arrivalId, vesselName, to: '2026-03-01T20:00:00Z', status };
+  }
+  function berthWith(occupants) {
+    return {
+      id: 'B1',
+      name: 'North Quay',
+      lengthM: 100,
+      depthM: 8,
+      occupied: occupants.length > 0,
+      outOfService: false,
+      occupant: occupants[0] || null,
+      occupants,
+    };
+  }
+  function departButtons(document) {
+    return [...document.querySelectorAll('.btn-depart')];
+  }
+  const A_409 = () =>
+    makeRes(
+      { error: 'only arrived or overdue vessels can be departed' },
+      { ok: false, status: 409, statusText: 'Conflict' }
+    );
+
+  test('Depart shows only for arrived/overdue occupants, not expected', async () => {
+    const { window } = await bootApp({
+      online: true,
+      berths: [
+        berthWith([
+          occupant('arr-arrived', 'MV Arrived', 'arrived'),
+          occupant('arr-overdue', 'MV Overdue', 'overdue'),
+          occupant('arr-expected', 'MV Expected', 'expected'),
+        ]),
+      ],
+    });
+    const { document } = window;
+    // All three vessels are listed on the tile...
+    const board = document.getElementById('berth-list').textContent;
+    expect(board).toContain('MV Arrived');
+    expect(board).toContain('MV Overdue');
+    expect(board).toContain('MV Expected');
+    // ...but only the two departable ones get a button.
+    expect(departButtons(document)).toHaveLength(2);
+  });
+
+  test('clicking Depart posts to /depart for the right arrival and refreshes', async () => {
+    const { window, calls } = await bootApp({
+      online: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+    });
+    const { document } = window;
+
+    const before = writeCount(calls);
+    const readsBefore = calls.filter((c) => c.url.includes('/api/arrivals')).length;
+    departButtons(document)[0].click();
+    await flush();
+
+    const posts = calls.filter((c) => c.opts && c.opts.method === 'POST');
+    expect(writeCount(calls)).toBe(before + 1);
+    expect(posts[posts.length - 1].url).toContain('/api/arrivals/arr-1/depart');
+    // refresh() ran: the board was re-read after the successful write.
+    expect(calls.filter((c) => c.url.includes('/api/arrivals')).length).toBeGreaterThan(
+      readsBefore
+    );
+  });
+
+  test('a rafted berth lists both occupants; departing one targets only that arrival', async () => {
+    const { window, calls } = await bootApp({
+      online: true,
+      berths: [
+        berthWith([
+          occupant('raft-1', 'Raft One', 'arrived'),
+          occupant('raft-2', 'Raft Two', 'arrived'),
+        ]),
+      ],
+    });
+    const { document } = window;
+
+    const buttons = departButtons(document);
+    expect(buttons).toHaveLength(2);
+    expect(document.getElementById('berth-list').textContent).toContain('Raft One');
+    expect(document.getElementById('berth-list').textContent).toContain('Raft Two');
+
+    buttons[0].click();
+    await flush();
+
+    const posts = calls.filter((c) => c.opts && c.opts.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(posts[0].url).toContain('/api/arrivals/raft-1/depart');
+    // The other occupant's control is untouched and still points at its own id.
+    expect(document.getElementById('berth-list').textContent).toContain('Raft Two');
+  });
+
+  test('a filtered-out vessel keeps its berth tile and its Depart button', async () => {
+    // The berths endpoint is not filtered by the arrivals type dropdown, so the
+    // board must render occupants regardless of the filter (SVD-18).
+    const { window, calls } = await bootApp({
+      online: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+    });
+    const { document } = window;
+    expect(departButtons(document)).toHaveLength(1);
+
+    const filter = document.getElementById('type-filter');
+    filter.value = 'tanker';
+    filter.dispatchEvent(new window.Event('change'));
+    await flush();
+
+    // The arrivals read is now type-scoped, but the berth tile still lists the
+    // occupant and still offers Depart.
+    expect(calls.some((c) => c.url.includes('type=tanker'))).toBe(true);
+    expect(document.getElementById('berth-list').textContent).toContain('MV One');
+    expect(departButtons(document)).toHaveLength(1);
+  });
+
+  test('offline: Depart is refused with a clear message, no write attempted', async () => {
+    const { window, calls } = await bootApp({
+      online: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+    });
+    const { document } = window;
+
+    setOnline(window, false);
+    const before = writeCount(calls);
+    departButtons(document)[0].click();
+    await flush();
+
+    expect(writeCount(calls)).toBe(before);
+    const msg = document.getElementById('berths-message');
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent.toLowerCase()).toContain('offline');
+  });
+
+  test('read-only: Depart shows the server message, not a bare 403', async () => {
+    const { window } = await bootApp({
+      online: true,
+      readOnly: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+      writeRes: READ_ONLY_403(),
+    });
+    const { document } = window;
+
+    departButtons(document)[0].click();
+    await flush();
+
+    const msg = document.getElementById('berths-message');
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent.toLowerCase()).toContain('read-only demo');
+    expect(msg.textContent).not.toContain('403');
+  });
+
+  test('a 409 from the server (wrong status) is shown, not swallowed', async () => {
+    const { window } = await bootApp({
+      online: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+      writeRes: A_409(),
+    });
+    const { document } = window;
+
+    departButtons(document)[0].click();
+    await flush();
+
+    const msg = document.getElementById('berths-message');
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent).toContain('only arrived or overdue vessels can be departed');
+    expect(msg.textContent).not.toContain('409');
   });
 });
