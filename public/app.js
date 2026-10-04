@@ -517,34 +517,41 @@ function renderBerths(berths) {
     // endpoint, NOT the type-filtered arrivals list, so a filtered-out vessel
     // keeps its tile and its Depart button (SVD-18).
     const occupants = berth.occupants || (berth.occupant ? [berth.occupant] : []);
+
+    // Maintenance and occupancy are independent: POST /:id/maintenance toggles
+    // outOfService without releasing assignments (routes/berths.js), so a berth
+    // can be both. Render each on its own and only say "Available" when neither
+    // applies — otherwise a maintenance flag would hide the Depart controls.
     if (berth.outOfService) {
-      occupant.textContent = '🔧 Maintenance';
+      const maint = el('div', 'maint-line');
+      maint.appendChild(document.createTextNode('🔧 Maintenance'));
       if (berth.maintenanceReason) {
-        const reason = el('span', 'maint-reason', berth.maintenanceReason);
-        reason.className = 'maint-reason';
-        occupant.appendChild(reason);
+        maint.appendChild(el('span', 'maint-reason', berth.maintenanceReason));
       }
-    } else if (occupants.length > 0) {
-      for (const occ of occupants) {
-        const line = el('div', 'occupant-line');
-        line.appendChild(document.createTextNode(occ.vesselName));
-        line.appendChild(el('span', 'until', `until ${fmtDayTime(occ.to)}`));
-        // Depart only for occupants the /depart endpoint accepts. An expected
-        // (not-yet-arrived) vessel has no departure to log, and there is no
-        // unassign endpoint — leaving that out of scope (SVD-18).
-        if (occ.status === 'arrived' || occ.status === 'overdue') {
-          const departBtn = el('button', 'btn-depart', 'Depart');
-          departBtn.type = 'button';
-          // Every Depart button reads "Depart"; on a rafted berth that is
-          // ambiguous to assistive tech, which does not pick up the sibling
-          // vessel text, so name the vessel in the accessible label.
-          departBtn.setAttribute('aria-label', `Depart ${occ.vesselName}`);
-          departBtn.addEventListener('click', () => departVessel(occ.arrivalId, departBtn));
-          line.appendChild(departBtn);
-        }
-        occupant.appendChild(line);
+      occupant.appendChild(maint);
+    }
+
+    for (const occ of occupants) {
+      const line = el('div', 'occupant-line');
+      line.appendChild(document.createTextNode(occ.vesselName));
+      line.appendChild(el('span', 'until', `until ${fmtDayTime(occ.to)}`));
+      // Depart only for occupants the /depart endpoint accepts. An expected
+      // (not-yet-arrived) vessel has no departure to log, and there is no
+      // unassign endpoint — leaving that out of scope (SVD-18).
+      if (occ.status === 'arrived' || occ.status === 'overdue') {
+        const departBtn = el('button', 'btn-depart', 'Depart');
+        departBtn.type = 'button';
+        // Every Depart button reads "Depart"; on a rafted berth that is
+        // ambiguous to assistive tech, which does not pick up the sibling
+        // vessel text, so name the vessel in the accessible label.
+        departBtn.setAttribute('aria-label', `Depart ${occ.vesselName}`);
+        departBtn.addEventListener('click', () => departVessel(occ.arrivalId, departBtn));
+        line.appendChild(departBtn);
       }
-    } else {
+      occupant.appendChild(line);
+    }
+
+    if (!berth.outOfService && occupants.length === 0) {
       occupant.textContent = 'Available';
     }
     item.appendChild(occupant);

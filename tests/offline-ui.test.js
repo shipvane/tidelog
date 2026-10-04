@@ -733,8 +733,8 @@ describe('SVD-18 Depart action on occupied berths', () => {
     );
   });
 
-  test('a rafted berth lists both occupants; departing one targets only that arrival', async () => {
-    const { window, calls } = await bootApp({
+  test('departing one rafted vessel removes it from the berth and keeps it in the log as departed', async () => {
+    const { window } = await bootApp({
       online: true,
       berths: [
         berthWith([
@@ -745,19 +745,52 @@ describe('SVD-18 Depart action on occupied berths', () => {
     });
     const { document } = window;
 
-    const buttons = departButtons(document);
-    expect(buttons).toHaveLength(2);
+    // Both vessels are listed, each with its own Depart control.
+    expect(departButtons(document)).toHaveLength(2);
     expect(document.getElementById('berth-list').textContent).toContain('Raft One');
     expect(document.getElementById('berth-list').textContent).toContain('Raft Two');
 
-    buttons[0].click();
+    // Make the mock stateful: after Raft One departs, the server releases its
+    // berth assignment (so the board shows only Raft Two) and the arrival stays
+    // in the log as `departed`. This mirrors the real /depart endpoint, so the
+    // refresh() outcome — not just the preexisting render — is what is asserted.
+    let departed = false;
+    const departedArrival = {
+      ...EXPECTED_VESSEL,
+      id: 'raft-1',
+      vesselName: 'Raft One',
+      status: 'departed',
+    };
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === 'POST' && u.includes('/api/arrivals/raft-1/depart')) {
+        departed = true;
+        return Promise.resolve(makeRes({}));
+      }
+      if (u.includes('/api/berths')) {
+        const occ = departed
+          ? [occupant('raft-2', 'Raft Two', 'arrived')]
+          : [occupant('raft-1', 'Raft One', 'arrived'), occupant('raft-2', 'Raft Two', 'arrived')];
+        return Promise.resolve(makeRes({ berths: [berthWith(occ)] }));
+      }
+      if (u.includes('/api/arrivals'))
+        return Promise.resolve(makeRes({ arrivals: departed ? [departedArrival] : [] }));
+      if (u.includes('/api/tides')) return Promise.resolve(makeRes({ windows: [] }));
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+
+    departButtons(document)[0].click(); // depart Raft One
     await flush();
 
-    const posts = calls.filter((c) => c.opts && c.opts.method === 'POST');
-    expect(posts).toHaveLength(1);
-    expect(posts[0].url).toContain('/api/arrivals/raft-1/depart');
-    // The other occupant's control is untouched and still points at its own id.
-    expect(document.getElementById('berth-list').textContent).toContain('Raft Two');
+    // The berth now lists only the vessel left in place...
+    const board = document.getElementById('berth-list').textContent;
+    expect(board).toContain('Raft Two');
+    expect(board).not.toContain('Raft One');
+    // ...and Raft One is still in the arrivals log, now marked departed.
+    const log = document.getElementById('arrivals-body').textContent;
+    expect(log).toContain('Raft One');
+    expect(log).toContain('departed');
   });
 
   test('a filtered-out vessel keeps its berth tile and its Depart button', async () => {
@@ -780,6 +813,20 @@ describe('SVD-18 Depart action on occupied berths', () => {
     expect(calls.some((c) => c.url.includes('type=tanker'))).toBe(true);
     expect(document.getElementById('berth-list').textContent).toContain('MV One');
     expect(departButtons(document)).toHaveLength(1);
+  });
+
+  test('a berth both occupied and in maintenance still shows its occupant and Depart', async () => {
+    // POST /:id/maintenance toggles outOfService without releasing assignments,
+    // so a berth can be both. The maintenance notice must not hide the occupant
+    // or its Depart control (round-2 review).
+    const berth = berthWith([occupant('arr-1', 'MV One', 'arrived')]);
+    berth.outOfService = true;
+    berth.maintenanceReason = 'Dredging';
+    const { window } = await bootApp({ online: true, berths: [berth] });
+    const board = window.document.getElementById('berth-list').textContent;
+    expect(board).toContain('Maintenance');
+    expect(board).toContain('MV One');
+    expect(departButtons(window.document)).toHaveLength(1);
   });
 
   test('offline: Depart is refused with a clear message, no write attempted', async () => {
