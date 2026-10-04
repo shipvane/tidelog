@@ -63,20 +63,31 @@ async function readErrorMessage(res, fallback) {
  * (SVD-21) — `navigator.onLine` only reports a network interface, not whether
  * the harbor server actually answered.
  */
-async function fetchData(url) {
+/**
+ * fetch() with a deadline that CANCELS. A timeout that only stops waiting
+ * leaves the request open, and against a server that never answers every cycle
+ * would leave three more, enough to exhaust the browser's per-origin
+ * connections (Copilot on #61). Aborting frees the connection; the race keeps
+ * the deadline even if a fetch ignores the signal.
+ */
+async function fetchWithTimeout(url) {
+  const controller = new AbortController();
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${url} timed out`)), REFRESH_TIMEOUT_MS);
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`${url} timed out`));
+    }, REFRESH_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([readData(url), timeout]);
+    return await Promise.race([fetch(url, { signal: controller.signal }), timeout]);
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function readData(url) {
-  const res = await fetch(url);
+async function fetchData(url) {
+  const res = await fetchWithTimeout(url);
   if (!res.ok) throw new Error(`${url} -> ${res.status}`);
   const get = res.headers && res.headers.get ? (name) => res.headers.get(name) : () => null;
   const stamped = Number(get('X-TideLog-Fetched-At'));
@@ -763,12 +774,24 @@ function renderNotifications(deliveries) {
   }
 }
 
+// Notifications run outside the board's cycle, so they get their own rule: one
+// at a time. A request while one is pending is skipped, not queued (the next
+// board cycle asks again), so requests can't pile up against a hung endpoint
+// and an older response can't overwrite a newer one (Copilot on #61).
+let notificationsInFlight = false;
+
 async function refreshNotifications() {
+  if (notificationsInFlight) return;
+  notificationsInFlight = true;
   try {
-    const data = await fetchJson('/api/webhooks/deliveries?limit=20');
+    const res = await fetchWithTimeout('/api/webhooks/deliveries?limit=20');
+    if (!res.ok) throw new Error(`notifications -> ${res.status}`);
+    const data = await res.json();
     renderNotifications(data.deliveries);
   } catch {
     // Non-fatal; keep showing last known state.
+  } finally {
+    notificationsInFlight = false;
   }
 }
 

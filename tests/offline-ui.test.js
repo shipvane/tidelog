@@ -679,15 +679,40 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     expect(boardReads.length).toBe(6); // the second cycle ran
   });
 
+  test('notifications never overlap: a pending request is not joined by another', async () => {
+    // Copilot on #61: with notifications outside the board cycle, each cycle
+    // started another fetch while the last was pending, piling up against a hung
+    // endpoint and letting an older snapshot land after a newer one.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    let webhookCalls = 0;
+    window.fetch = (url) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) {
+        webhookCalls += 1;
+        return new Promise(() => {}); // hung
+      }
+      return Promise.resolve(makeRes(boardBody(u, 'MV Any'), { fromCache: false }));
+    };
+    for (let i = 0; i < 3; i += 1) {
+      startRefresh(window);
+      await flush();
+    }
+    expect(webhookCalls).toBe(1);
+  });
+
   test('a board read that never answers times out: STALE, and the next refresh runs', async () => {
     const { window } = await bootApp({ online: true, fromCache: false, refreshTimeoutMs: 40 });
     let hang = true;
     const boardReads = [];
-    window.fetch = (url) => {
+    const signals = [];
+    window.fetch = (url, opts) => {
       const u = String(url);
       if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
       boardReads.push(u);
-      if (hang) return new Promise(() => {});
+      if (hang) {
+        signals.push(opts && opts.signal);
+        return new Promise(() => {}); // a server that never answers
+      }
       return Promise.resolve(makeRes(boardBody(u, 'MV Back'), { fromCache: false }));
     };
     startRefresh(window);
@@ -695,6 +720,10 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     await new Promise((r) => setTimeout(r, 80)); // past the 40 ms timeout
     await flush();
     expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
+    // The hung requests were cancelled, not just abandoned: left open, each
+    // cycle against a dead server would add three more (Copilot on #61).
+    expect(signals.length).toBe(3);
+    expect(signals.every((sig) => sig && sig.aborted)).toBe(true);
 
     hang = false;
     startRefresh(window);
