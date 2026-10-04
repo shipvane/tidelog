@@ -632,6 +632,10 @@ document.getElementById('type-filter').addEventListener('change', () => {
 // badge immediately even though the last render is still on screen.
 window.addEventListener('online', () => {
   renderSyncState();
+  // A tab that first loaded offline couldn't reach the network-only /api/health,
+  // so it never learned it was the read-only demo. Re-check on reconnect so the
+  // notice still appears before the user tries to write.
+  loadReadOnly();
   refresh();
 });
 window.addEventListener('offline', () => {

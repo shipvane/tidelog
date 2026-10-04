@@ -73,8 +73,12 @@ async function bootApp({
     // 403); otherwise writes succeed as before.
     if (opts && opts.method && opts.method !== 'GET')
       return Promise.resolve(writeRes || makeRes({}));
-    if (u.includes('/api/health'))
+    if (u.includes('/api/health')) {
+      // /api/health is network-only in the SW, so it has no cache fallback:
+      // offline, the request simply fails, like it would in the browser.
+      if (!window.navigator.onLine) return Promise.reject(new Error('offline'));
       return Promise.resolve(makeRes({ status: 'ok', service: 'tidelog', readOnly }));
+    }
     if (u.includes('/api/arrivals'))
       return Promise.resolve(makeRes({ arrivals }, { fetchedAt: stamps.arrivals }));
     if (u.includes('/api/berths'))
@@ -349,6 +353,20 @@ describe('SVD-20 read-only demo mode in the UI', () => {
     // The modal stays open with the selection intact so nothing is lost.
     expect(document.getElementById('assign-modal').hidden).toBe(false);
     expect(radio.checked).toBe(true);
+  });
+
+  test('a tab that booted offline learns it is the demo on reconnect', async () => {
+    const { window } = await bootApp({ online: false, readOnly: true });
+    const notice = window.document.getElementById('readonly-notice');
+    // Offline boot: /api/health was unreachable, so the notice is not shown yet.
+    expect(notice.hidden).toBe(true);
+
+    setOnline(window, true);
+    window.dispatchEvent(new window.Event('online'));
+    await flush();
+
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent.toLowerCase()).toContain('read-only demo');
   });
 
   test('read-only: a refused resend is reported in the panel, not swallowed', async () => {
