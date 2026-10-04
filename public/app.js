@@ -450,7 +450,7 @@ function setBerthsMessage(text, kind) {
  * the arrivals log and the Berths-Occupied stat update together (SVD-18/SVD-19).
  * The vessel stays in the log as `departed`; the server releases the berth.
  */
-async function departVessel(arrivalId) {
+async function departVessel(arrivalId, btn) {
   setBerthsMessage(null); // clear any message from a previous attempt
 
   // Refuse while offline rather than queue: a departure logged against a stale
@@ -463,6 +463,12 @@ async function departVessel(arrivalId) {
     return;
   }
 
+  // Disable the clicked button while the request is in flight so a double-click
+  // can't fire two departures — the second would land a 409 and leave a success
+  // sitting next to an error. On success refresh() replaces the whole board, so
+  // this button goes away; on any failure path it is re-enabled below.
+  if (btn) btn.disabled = true;
+
   try {
     const res = await fetch(`/api/arrivals/${arrivalId}/depart`, { method: 'POST' });
     if (res.ok) {
@@ -471,6 +477,7 @@ async function departVessel(arrivalId) {
       // Show the server's own words — the read-only 403 message, or a 409 when
       // the vessel is no longer in a departable state — never a bare code or
       // silence (SVD-20).
+      if (btn) btn.disabled = false;
       setBerthsMessage(
         await readErrorMessage(res, 'The departure could not be logged. Please try again.'),
         'error'
@@ -479,6 +486,7 @@ async function departVessel(arrivalId) {
   } catch {
     // The connection dropped mid-request. Say so rather than leaving the click
     // unexplained.
+    if (btn) btn.disabled = false;
     setBerthsMessage(
       "Couldn't reach the harbor server to log the departure — check your connection and try again.",
       'warn'
@@ -527,7 +535,11 @@ function renderBerths(berths) {
         if (occ.status === 'arrived' || occ.status === 'overdue') {
           const departBtn = el('button', 'btn-depart', 'Depart');
           departBtn.type = 'button';
-          departBtn.addEventListener('click', () => departVessel(occ.arrivalId));
+          // Every Depart button reads "Depart"; on a rafted berth that is
+          // ambiguous to assistive tech, which does not pick up the sibling
+          // vessel text, so name the vessel in the accessible label.
+          departBtn.setAttribute('aria-label', `Depart ${occ.vesselName}`);
+          departBtn.addEventListener('click', () => departVessel(occ.arrivalId, departBtn));
           line.appendChild(departBtn);
         }
         occupant.appendChild(line);

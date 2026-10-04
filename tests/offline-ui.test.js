@@ -834,4 +834,76 @@ describe('SVD-18 Depart action on occupied berths', () => {
     expect(msg.textContent).toContain('only arrived or overdue vessels can be departed');
     expect(msg.textContent).not.toContain('409');
   });
+
+  test('a dropped connection mid-request is reported, not swallowed', async () => {
+    // The POST itself rejects (online, but the server became unreachable) —
+    // departVessel's catch branch must surface a connection message.
+    const { window } = await bootApp({
+      online: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+    });
+    const { document } = window;
+
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === 'POST' && u.includes('/depart'))
+        return Promise.reject(new Error('network'));
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+
+    const btn = departButtons(document)[0];
+    btn.click();
+    await flush();
+
+    const msg = document.getElementById('berths-message');
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent.toLowerCase()).toContain('connection');
+    // The failed request re-enables the button so the operator can retry.
+    expect(btn.disabled).toBe(false);
+  });
+
+  test('each Depart button names its vessel for assistive tech', async () => {
+    const { window } = await bootApp({
+      online: true,
+      berths: [
+        berthWith([
+          occupant('raft-1', 'Raft One', 'arrived'),
+          occupant('raft-2', 'Raft Two', 'arrived'),
+        ]),
+      ],
+    });
+    const labels = departButtons(window.document).map((b) => b.getAttribute('aria-label'));
+    expect(labels).toEqual(['Depart Raft One', 'Depart Raft Two']);
+  });
+
+  test('a double-click cannot fire two departures: the button disables while pending', async () => {
+    const { window } = await bootApp({
+      online: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+    });
+    const { document } = window;
+
+    // Hold the departure POST open so the request stays in flight, counting how
+    // many are actually sent.
+    let departPosts = 0;
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === 'POST' && u.includes('/depart')) {
+        departPosts += 1;
+        return new Promise(() => {});
+      }
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+
+    const btn = departButtons(document)[0];
+    btn.click();
+    await flush();
+    expect(btn.disabled).toBe(true);
+    btn.click(); // the double-click
+    await flush();
+
+    expect(departPosts).toBe(1);
+  });
 });
