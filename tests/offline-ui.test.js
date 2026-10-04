@@ -53,6 +53,8 @@ async function bootApp({
   windows = [],
   deliveries = [],
   stamps = {},
+  readOnly = false,
+  writeRes = null,
   html = (text) => text,
 } = {}) {
   const pageRes = await request(app).get('/');
@@ -67,7 +69,18 @@ async function bootApp({
   window.fetch = (url, opts) => {
     const u = String(url);
     calls.push({ url: u, opts });
-    if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+    // writeRes lets a test make the server refuse a write (e.g. the read-only
+    // 403); otherwise writes succeed as before.
+    if (opts && opts.method && opts.method !== 'GET')
+      return Promise.resolve(writeRes || makeRes({}));
+    if (u.includes('/api/health')) {
+      // /api/health is network-only in the SW, so it has no cache fallback:
+      // offline (or on a transient failure a test opts into) it simply fails,
+      // like it would in the browser.
+      if (!window.navigator.onLine || window.__failHealth)
+        return Promise.reject(new Error('offline'));
+      return Promise.resolve(makeRes({ status: 'ok', service: 'tidelog', readOnly }));
+    }
     if (u.includes('/api/arrivals'))
       return Promise.resolve(makeRes({ arrivals }, { fetchedAt: stamps.arrivals }));
     if (u.includes('/api/berths'))
@@ -110,6 +123,27 @@ const OPEN_BERTH = {
   occupied: false,
   outOfService: false,
 };
+const DELIVERY = {
+  id: 'd1',
+  attemptedAt: '2026-03-01T14:00:00Z',
+  vesselName: 'MV Test',
+  eventType: 'arrival_confirmed',
+  url: 'https://example.test/hook',
+  ok: true,
+  httpStatus: 200,
+  retried: false,
+};
+
+// The server's real read-only refusal (server.js): a 403 whose body carries the
+// message the UI must surface instead of the bare status code.
+const READ_ONLY_403 = () =>
+  makeRes(
+    {
+      error: 'read_only',
+      message: 'This is a public read-only demo of TideLog. Clone the repo to run a writable copy.',
+    },
+    { ok: false, status: 403, statusText: 'Forbidden' }
+  );
 
 describe('SVD-13 dashboard offline behaviour', () => {
   test('a successful online refresh shows LIVE and a last-synced time', async () => {
@@ -236,20 +270,26 @@ describe('SVD-13 dashboard offline behaviour', () => {
 
   test('new app.js against an OLDER cached index.html still loads the board', async () => {
     // Shell files revalidate independently, so after this deploys a returning
-    // visitor can run this app.js against the pre-SVD-13 document, which has no
-    // #last-synced and no #modal-message. It must not throw before refreshing.
+    // visitor can run this app.js against an older document, which has no
+    // #last-synced, no #modal-message, and (pre-SVD-20) no #readonly-notice or
+    // #notifications-message. It must not throw before refreshing.
     const oldMarkup = (text) =>
       text
         .replace(/<span[^>]*id="last-synced"[^>]*><\/span>/, '')
-        .replace(/<div[^>]*id="modal-message"[^>]*><\/div>/, '');
+        .replace(/<div[^>]*id="modal-message"[^>]*><\/div>/, '')
+        .replace(/<div[^>]*id="readonly-notice"[^>]*><\/div>/, '')
+        .replace(/<div[^>]*id="notifications-message"[^>]*><\/div>/, '');
     const { window, calls } = await bootApp({
       online: true,
+      readOnly: true, // even in demo mode, a missing notice must not break boot
       arrivals: [EXPECTED_VESSEL],
       berths: [OPEN_BERTH],
       html: oldMarkup,
     });
     expect(window.document.getElementById('last-synced')).toBeNull();
     expect(window.document.getElementById('modal-message')).toBeNull();
+    expect(window.document.getElementById('readonly-notice')).toBeNull();
+    expect(window.document.getElementById('notifications-message')).toBeNull();
     expect(calls.some((c) => c.url.includes('/api/arrivals'))).toBe(true);
     expect(window.document.getElementById('arrivals-body').textContent).toContain('MV Test');
     expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
@@ -258,5 +298,111 @@ describe('SVD-13 dashboard offline behaviour', () => {
   test('the refusal message is announced to assistive tech', async () => {
     const { window } = await bootApp({ online: true });
     expect(window.document.getElementById('modal-message').getAttribute('role')).toBe('alert');
+  });
+});
+
+describe('SVD-20 read-only demo mode in the UI', () => {
+  test('read-only reported: the demo notice renders with its explanation, controls stay enabled', async () => {
+    const { window } = await bootApp({
+      online: true,
+      readOnly: true,
+      arrivals: [EXPECTED_VESSEL],
+      berths: [OPEN_BERTH],
+    });
+    const { document } = window;
+
+    const notice = document.getElementById('readonly-notice');
+    expect(notice).not.toBeNull();
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent.toLowerCase()).toContain('read-only demo');
+
+    // The design choice: controls stay enabled and explain on click, so the
+    // Assign button is still present and usable (the refusal is shown on click).
+    const assignBtn = document.querySelector('.btn-assign');
+    expect(assignBtn).not.toBeNull();
+    expect(assignBtn.disabled).toBe(false);
+  });
+
+  test('writable: the demo notice is not shown', async () => {
+    const { window } = await bootApp({ online: true, readOnly: false });
+    const notice = window.document.getElementById('readonly-notice');
+    expect(notice.hidden).toBe(true);
+    expect(notice.textContent).toBe('');
+  });
+
+  test('read-only: confirming an assignment shows the server message, not a 403, selection kept', async () => {
+    const { window } = await bootApp({
+      online: true,
+      readOnly: true,
+      arrivals: [EXPECTED_VESSEL],
+      berths: [OPEN_BERTH],
+      writeRes: READ_ONLY_403(),
+    });
+    const { document } = window;
+
+    document.querySelector('.btn-assign').click();
+    const radio = document.querySelector('input[name="berth-selection"]');
+    radio.checked = true;
+    radio.dispatchEvent(new window.Event('change'));
+    const confirm = document.getElementById('modal-confirm');
+    confirm.click();
+    await flush();
+
+    const msg = document.getElementById('modal-message');
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent.toLowerCase()).toContain('read-only demo');
+    expect(msg.textContent).not.toContain('403');
+    // The modal stays open with the selection intact so nothing is lost.
+    expect(document.getElementById('assign-modal').hidden).toBe(false);
+    expect(radio.checked).toBe(true);
+  });
+
+  test('a tab that booted offline learns it is the demo on reconnect', async () => {
+    const { window } = await bootApp({ online: false, readOnly: true });
+    const notice = window.document.getElementById('readonly-notice');
+    // Offline boot: /api/health was unreachable, so the notice is not shown yet.
+    expect(notice.hidden).toBe(true);
+
+    setOnline(window, true);
+    window.dispatchEvent(new window.Event('online'));
+    await flush();
+
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent.toLowerCase()).toContain('read-only demo');
+  });
+
+  test('a transient health failure does not erase a confirmed read-only notice', async () => {
+    const { window } = await bootApp({ online: true, readOnly: true });
+    const notice = window.document.getElementById('readonly-notice');
+    expect(notice.hidden).toBe(false); // confirmed on boot
+
+    // A later online event whose /api/health fails transiently must keep the
+    // known state, not clear it and hide the banner.
+    window.__failHealth = true;
+    window.dispatchEvent(new window.Event('online'));
+    await flush();
+
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent.toLowerCase()).toContain('read-only demo');
+  });
+
+  test('read-only: a refused resend is reported in the panel, not swallowed', async () => {
+    const { window } = await bootApp({
+      online: true,
+      readOnly: true,
+      deliveries: [DELIVERY],
+      writeRes: READ_ONLY_403(),
+    });
+    const { document } = window;
+
+    const resendBtn = document.querySelector('.btn-resend');
+    expect(resendBtn).not.toBeNull();
+    resendBtn.click();
+    await flush();
+
+    const msg = document.getElementById('notifications-message');
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent.toLowerCase()).toContain('read-only demo');
+    expect(msg.textContent).not.toContain('403');
   });
 });

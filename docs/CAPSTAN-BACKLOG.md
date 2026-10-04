@@ -121,7 +121,8 @@ a human decision. Keep it that way.
      is NOT queued: a successful assign already calls refresh(), which recomputes
      the stat at public/app.js:364, and SVD-18 below refreshes the same way. -->
 
-- [ ] The read-only demo says it is read-only, instead of failing with a 403 — tracked as **SVD-20**
+- [x] The read-only demo says it is read-only, instead of failing with a 403 — tracked as **SVD-20**
+  - Done in PR: `/api/health` now reports `readOnly`; the page shows a demo notice up front and surfaces the server's own 403 message on both writes (assign + resend) instead of a bare code or silence.
   - **Mechanism.** On the live site `TIDELOG_READ_ONLY=true`, and `server.js:35-44` answers every `/api` write with `403 {error: "read_only", message: "This is a public read-only demo of TideLog. Clone the repo to run a writable copy."}`. The UI throws that message away. Confirming a berth assignment shows **"Failed to assign berth: 403 Forbidden"** (`public/app.js:260`), which reads as a broken app. Resend in the notifications panel (`resendDelivery`, `public/app.js` ~line 424) fails **silently**: `fetch` does not throw on a 403, so nothing happens and nothing is said.
   - **Fix.** The page has to know it is in demo mode before the user acts. Expose read-only status from the server (for example `readOnly` on `GET /api/health`, or a small `GET /api/config`) and show it once, plainly, in the UI. Then every write control either explains up front or, at minimum, shows the server's own `message` on refusal. Never a bare status code, never silence. Cover **every** write the UI can make: today that's assign and resend. List them in the PR so the next one isn't missed.
   - **Do not** hard-code demo mode in the client or infer it from the hostname. The server already knows (`TIDELOG_READ_ONLY`), so read it from there. Local dev and the tests run writable and must stay writable.
