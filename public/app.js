@@ -32,25 +32,40 @@ async function fetchJson(url) {
 }
 
 /**
- * Harbor-data read that also reports WHEN the data was fetched. The service
- * worker stamps every copy it stores with `X-TideLog-Fetched-At`, so an offline
- * answer from its cache says how old it is. No header means the response came
- * straight off the network, which makes it current as of now.
+ * Harbor-data read that also reports WHEN the data was fetched and WHETHER it
+ * came off the network. The service worker stamps every copy it stores with
+ * `X-TideLog-Fetched-At`, so an offline answer from its cache says how old it is,
+ * and adds `X-TideLog-From-Cache` only when it falls back to that cache. No
+ * from-cache header means the read reached the server, which is what LIVE means
+ * (SVD-21) — `navigator.onLine` only reports a network interface, not whether
+ * the harbor server actually answered.
  */
 async function fetchData(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url} -> ${res.status}`);
-  const stamped = Number(res.headers && res.headers.get && res.headers.get('X-TideLog-Fetched-At'));
-  return { data: await res.json(), fetchedAt: stamped > 0 ? stamped : Date.now() };
+  const get = res.headers && res.headers.get ? (name) => res.headers.get(name) : () => null;
+  const stamped = Number(get('X-TideLog-Fetched-At'));
+  return {
+    data: await res.json(),
+    fetchedAt: stamped > 0 ? stamped : Date.now(),
+    fromCache: get('X-TideLog-From-Cache') === '1',
+  };
 }
 
 // SVD-13 offline support. The service worker serves harbor data from a cache
-// when offline, so a read still SUCCEEDS with no network — which means fetch
-// success can no longer tell us we are live. `navigator.onLine` and the
-// online/offline events are the source of truth for the connection badge. The
-// last-synced time is the fetch time of the OLDEST data on screen, read off the
-// response itself (see fetchData), never the moment the page asked.
+// when offline, so a read still SUCCEEDS with no network. The last-synced time
+// is the fetch time of the OLDEST data on screen, read off the response itself
+// (see fetchData), never the moment the page asked.
+//
+// SVD-21: the connection badge now reflects where the DATA came from, not just
+// `navigator.onLine` — which reports a network interface, so a captive portal,
+// flaky wifi, or a dead server can leave the OS "online" while every read is
+// served from the SW's fallback cache. LIVE means the last refresh's reads all
+// reached the server. `lastRefreshLive` carries that verdict from refresh() to
+// renderSyncState(): true = all reads were fresh, false = some/all were cached or
+// the reads failed outright, null = no refresh has completed yet.
 const LAST_SYNCED_KEY = 'tidelog:last-synced';
+let lastRefreshLive = null;
 
 function loadLastSynced() {
   try {
@@ -75,14 +90,28 @@ let lastSyncedAt = loadLastSynced();
 function renderSyncState() {
   const online = navigator.onLine;
 
+  // Three states, not two (SVD-21):
+  //   OFFLINE — the device reports no network. Immediate, and it wins over
+  //             everything else: there is nothing to be live against.
+  //   LIVE    — online AND the last refresh's reads all reached the server.
+  //   STALE   — online but the data on screen came from the SW's cache, or the
+  //             last refresh failed outright. The device is connected but the
+  //             board is NOT live, so "OFFLINE" would read as a bug while
+  //             "LIVE" would be a lie. STALE says exactly what is true: act on
+  //             this board knowing the harbor data may have moved on.
+  let state;
+  if (!online) state = { text: 'OFFLINE', cls: 'badge badge-offline' };
+  else if (lastRefreshLive === true) state = { text: 'LIVE', cls: 'badge badge-live' };
+  else state = { text: 'STALE', cls: 'badge badge-stale' };
+
   // Every lookup here is guarded. The shell files revalidate independently, so
   // after a deploy a returning visitor can run this app.js against an older
   // cached index.html that predates these elements. Throwing here would stop the
   // dashboard loading at all; skipping the label just leaves it unshown.
   const badge = document.getElementById('status-badge');
   if (badge) {
-    badge.textContent = online ? 'LIVE' : 'OFFLINE';
-    badge.className = online ? 'badge badge-live' : 'badge badge-offline';
+    badge.textContent = state.text;
+    badge.className = state.cls;
   }
 
   const synced = document.getElementById('last-synced');
@@ -523,9 +552,15 @@ async function refresh() {
     // still stamped with when they were really fetched.
     lastSyncedAt = Math.min(...reads.map((r) => r.fetchedAt));
     saveLastSynced(lastSyncedAt);
+
+    // LIVE only if EVERY read reached the server. If any came from the SW's
+    // fallback cache, the board is current-looking but stale (SVD-21).
+    lastRefreshLive = reads.every((r) => !r.fromCache);
   } catch {
-    // Reads failed (offline with a cold cache, or a transient error). Keep the
-    // last good render; renderSyncState() below shows the real connection state.
+    // Reads failed (offline with a cold cache, or a transient error). The board
+    // on screen is the last good render, which is not live — a failed refresh
+    // must not leave a stale LIVE badge standing (SVD-21).
+    lastRefreshLive = false;
   }
 
   renderSyncState();

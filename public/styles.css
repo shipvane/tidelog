@@ -122,6 +122,19 @@ body {
   margin-right: 0.35rem;
 }
 
+/* Connected, but the board is served from the offline cache (SVD-21): the data
+   is not live. Brass is the palette's caution tone, between LIVE green and
+   OFFLINE red. */
+.badge-stale {
+  background: var(--brass-soft);
+  color: var(--brass);
+}
+
+.badge-stale::before {
+  content: '◐';
+  margin-right: 0.35rem;
+}
+
 .synced {
   font-size: 0.72rem;
   color: var(--topbar-ink);

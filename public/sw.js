@@ -83,6 +83,14 @@ function isCacheableApiPath(pathname) {
 // age. A response without it came straight from the network, so it is current.
 const FETCHED_AT_HEADER = 'X-TideLog-Fetched-At';
 
+// Header the SW adds ONLY when it answers a harbor-data read from its fallback
+// cache (the network was unreachable). The page reads it to keep the LIVE badge
+// honest: `navigator.onLine` reports a network interface, not whether the harbor
+// server actually answered, so a captive portal or a dead server can let a read
+// "succeed" from cache while the OS still says online. A fresh network response
+// never carries this header (SVD-21).
+const FROM_CACHE_HEADER = 'X-TideLog-From-Cache';
+
 // The app shell. `/` is the document (index.html); it is NOT listed separately
 // as `/index.html` — they are the same resource and two entries would cache one
 // document twice. Everything else in public/ that a cold offline load needs to
@@ -222,7 +230,23 @@ async function networkFirstData(request) {
     return new Response(body, init);
   } catch {
     const cached = await cache.match(request);
-    if (cached) return cached;
+    if (cached) {
+      // Re-emit the cached copy with a marker so the page knows this read came
+      // from the fallback cache, not the network, and can keep the LIVE badge
+      // honest (SVD-21). The original fetch-time stamp is preserved so "last
+      // synced" stays accurate.
+      const body = await cached.text();
+      const headers = {};
+      const stamped = cached.headers.get(FETCHED_AT_HEADER);
+      if (stamped) headers[FETCHED_AT_HEADER] = stamped;
+      headers['Content-Type'] = cached.headers.get('Content-Type') || 'application/json';
+      headers[FROM_CACHE_HEADER] = '1';
+      return new Response(body, {
+        status: cached.status,
+        statusText: cached.statusText,
+        headers,
+      });
+    }
     return new Response(JSON.stringify({ error: 'offline' }), {
       status: 503,
       statusText: 'Offline',
