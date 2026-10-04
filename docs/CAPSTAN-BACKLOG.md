@@ -109,3 +109,36 @@ a human decision. Keep it that way.
   - **Writes are the hard part.** Prefer refusing writes while offline, clearly, preserving the user's typed input so nothing is lost. Background-sync queueing sounds better but a queued berth assignment can be invalid on replay — the berth may be taken — and refusing double bookings is TideLog's whole premise. **Do not half-build a queue:** one that cannot report a rejected replay is a double-booking generator. If a queue is wanted, file it separately with replay-rejection handling in scope.
   - Add an online/offline indicator in the header. The tide-window calculation is pure (`lib/tides.js`), so it should keep working offline provided the tide table is cached with the reads — verify that.
   - Tests: with the network stubbed offline the arrivals view renders from cache with a last-synced timestamp; an offline write is refused with input preserved; tide windows still compute; reconnecting refreshes without a manual reload.
+
+### The public demo tells the truth about what it can do (2026-10-03)
+
+<!-- Queued 2026-10-03. Order matters: SVD-18 adds a write action, and on the
+     read-only public demo every write is refused, so it builds on SVD-20's
+     handling rather than inventing its own. SVD-19 (live Berths-Occupied stat)
+     is NOT queued: a successful assign already calls refresh(), which recomputes
+     the stat at public/app.js:364, and SVD-18 below refreshes the same way. -->
+
+- [ ] The read-only demo says it is read-only, instead of failing with a 403 — tracked as **SVD-20**
+  - **Mechanism.** On the live site `TIDELOG_READ_ONLY=true`, and `server.js:35-44` answers every `/api` write with `403 {error: "read_only", message: "This is a public read-only demo of TideLog. Clone the repo to run a writable copy."}`. The UI throws that message away. Confirming a berth assignment shows **"Failed to assign berth: 403 Forbidden"** (`public/app.js:260`), which reads as a broken app. Resend in the notifications panel (`resendDelivery`, `public/app.js` ~line 424) fails **silently**: `fetch` does not throw on a 403, so nothing happens and nothing is said.
+  - **Fix.** The page has to know it is in demo mode before the user acts. Expose read-only status from the server (for example `readOnly` on `GET /api/health`, or a small `GET /api/config`) and show it once, plainly, in the UI. Then every write control either explains up front or, at minimum, shows the server's own `message` on refusal. Never a bare status code, never silence. Cover **every** write the UI can make: today that's assign and resend. List them in the PR so the next one isn't missed.
+  - **Do not** hard-code demo mode in the client or infer it from the hostname. The server already knows (`TIDELOG_READ_ONLY`), so read it from there. Local dev and the tests run writable and must stay writable.
+  - **Do not change** the server guard's behaviour or its response body. Other clients rely on the 403.
+  - **Tests, against the real files:** the server reports read-only **both** ways (env set and unset, since the set path is the one that matters on the live site); with read-only on, confirming an assignment shows the server's message and not `403`, and the selection is kept (same as the offline refusal); a refused resend is reported, not swallowed. Load the real `public/app.js` the way `tests/offline-ui.test.js` does. jsdom can't tell you anything is visible, so don't claim it.
+  - Question to answer in the PR: disable the write buttons up front, or leave them enabled and explain on click? Say which and why. A disabled button with no explanation is its own kind of silence.
+
+- [ ] A Depart action on occupied berths — tracked as **SVD-18**
+  - Depends on SVD-20.
+  - **Mechanism.** `POST /api/arrivals/:id/depart` already exists (`routes/arrivals.js:186`). It marks the vessel `departed`, stamps `departedAt`, **releases the berth assignment**, and fires the `departure_logged` webhook. The berth board has no way to call it.
+  - **SVD-18's wording is wrong in one place. Do not follow it there:** it says to "remove vessel from Arrivals Log". Don't. A departed vessel **stays in the log** with status `departed`, because departure logging and turnaround stats (`GET /api/stats/turnaround`) depend on the record existing. Removing it would destroy the data this action creates.
+  - **Fix.** Add a Depart button to occupied berth tiles whose occupant is `arrived` or `overdue`, calling the existing endpoint, then `refresh()` so the board, the log and the Berths-Occupied stat all update together (that's what satisfies SVD-19). A berth held by a still-`expected` vessel has no departure to log, and there's no unassign endpoint. **Leave that out of scope** and say so in the PR rather than adding a new route.
+  - Use SVD-20's demo-mode handling for the refusal on the live site. Don't write a second, different one.
+  - **Tests, against the real files:** Depart appears only for `arrived`/`overdue` occupants; clicking it posts to `/depart` for the right arrival and refreshes; the vessel is still in the log afterwards with status `departed`; a 409 from the server (wrong status) is shown, not swallowed; read-only mode refuses with the server's message.
+
+### Honest connection status (2026-10-03)
+
+- [ ] The LIVE badge says what the data says, not what `navigator.onLine` says — tracked as **SVD-21**
+  - **Mechanism.** `renderSyncState` (`public/app.js`) sets LIVE/OFFLINE from `navigator.onLine` alone. That reports a network interface, not whether the harbor server answered. When the server is unreachable but the OS says online (captive portal, flaky wifi, server down), `networkFirstData` in `public/sw.js` falls back to its cache, the reads **succeed**, and the board shows cached data under **LIVE**. SVD-13 made the "Synced HH:MM" time honest about this. The badge still isn't.
+  - **Fix.** Have the SW mark responses it serves from its fallback cache (for example `X-TideLog-From-Cache: 1`), have `fetchData` report it, and show LIVE only when the last refresh's reads all came from the network. `navigator.onLine === false` still means OFFLINE immediately.
+  - **Do not change:** network-first for harbor data, the `X-TideLog-Fetched-At` stamp, or "Synced = the oldest read's fetch time". And the kill-switch guarantees in `sw.js` (the `/sw-kill` navigation check, `if (killed) return;`, the `!killed` guard before every `cache.put`). The existing `tests/sw.test.js` and `tests/offline-ui.test.js` cases must pass unmodified.
+  - **Tests, against the real files:** a fallback response from the real `sw.js` carries the marker and a fresh network response does not; with `navigator.onLine` true but cached reads, the badge is **not** LIVE; with fresh reads it is; going offline still flips it at once.
+  - Question to answer in the PR: what does the badge say in that middle state, OFFLINE or something like STALE? Someone acting on a berth board needs to know the data isn't live, and "OFFLINE" while the device is connected may read as a bug. Pick one and say why.
