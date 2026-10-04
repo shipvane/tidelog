@@ -489,11 +489,13 @@ td .imo {
   border-top: 1px dashed var(--line);
 }
 
+/* Text is --ink, not --brass: --brass on --brass-soft is 3.08:1, below WCAG AA
+   (SVD-22). --ink on --brass-soft is 12.81:1. */
 .btn-depart {
   display: inline-block;
   margin-top: 0.3rem;
   background: var(--brass-soft);
-  color: var(--brass);
+  color: var(--ink);
   border: 1px solid var(--brass);
   padding: 0.2rem 0.65rem;
   font-size: 0.75rem;
@@ -503,10 +505,12 @@ td .imo {
   border-radius: 6px;
 }
 
+/* No solid-brass fill on hover: every text colour fails AA on --brass (white
+   3.61:1, ink 4.16:1). Card + ink stays readable (and uses tokens, not #fff). */
 .btn-depart:hover {
-  background: var(--brass);
-  color: #fff;
-  border-color: var(--brass);
+  background: var(--card);
+  color: var(--ink);
+  border-color: var(--ink);
 }
 
 .maint-reason {
