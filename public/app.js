@@ -97,8 +97,20 @@ let connectionEpoch = 0;
 // what is already on screen is dropped whole, success or failure. Otherwise an
 // older cached result could replace newer fresh data under its LIVE badge, or an
 // older failure could downgrade newer live data to STALE (Copilot on #59).
+//
+// Two marks, not one. `renderedSeq` is the newest refresh that actually RENDERED;
+// only a result older than that is dropped. `failedSeq` is the newest refresh that
+// FAILED; a success older than it still renders (its data is newer than what is on
+// screen) but cannot claim LIVE, because a later attempt could not reach the
+// server. A single mark advanced by failures too made "older than applied" mean
+// "a newer attempt failed", so a slow success was dropped and reported as
+// rendered when nothing had been (Copilot on #60).
 let refreshSeq = 0;
-let appliedSeq = 0;
+// True while #berths-message holds the post-depart "couldn't refresh" warning, so
+// the next successful render can clear it without erasing a refusal.
+let berthsRefreshWarning = false;
+let renderedSeq = 0;
+let failedSeq = 0;
 
 function loadLastSynced() {
   try {
@@ -426,6 +438,96 @@ function renderArrivals(arrivals, berths) {
     `${arrivals.length} vessel${arrivals.length === 1 ? '' : 's'} logged`;
 }
 
+/**
+ * Show or clear a message in the berth board panel. `kind` styles it
+ * ('warn' | 'error'); passing no text hides it. Guarded for an older cached
+ * index.html that predates the element (see renderSyncState).
+ */
+function setBerthsMessage(text, kind) {
+  let box = document.getElementById('berths-message');
+  if (!box) {
+    // An older cached index.html has no #berths-message, but this app.js still
+    // renders Depart buttons there, so a refusal would be silent. Create the box
+    // beside the berth list rather than drop the message (Copilot on #60).
+    if (!text) return;
+    const list = document.getElementById('berth-list');
+    if (!list || !list.parentNode) return;
+    box = document.createElement('div');
+    box.id = 'berths-message';
+    box.setAttribute('role', 'alert');
+    list.parentNode.insertBefore(box, list);
+  }
+  if (!text) {
+    box.hidden = true;
+    box.textContent = '';
+    box.className = 'panel-message';
+    return;
+  }
+  box.hidden = false;
+  box.textContent = text;
+  box.className = `panel-message panel-message-${kind || 'warn'}`;
+}
+
+/**
+ * Log the departure of a vessel occupying a berth, then refresh so the board,
+ * the arrivals log and the Berths-Occupied stat update together (SVD-18/SVD-19).
+ * The vessel stays in the log as `departed`; the server releases the berth.
+ */
+async function departVessel(arrivalId, btn) {
+  setBerthsMessage(null); // clear any message from a previous attempt
+  berthsRefreshWarning = false;
+
+  // Refuse while offline rather than queue: a departure logged against a stale
+  // board could be wrong, and the live demo refuses writes anyway (SVD-13/20).
+  if (!navigator.onLine) {
+    setBerthsMessage(
+      "You're offline — logging a departure needs a live connection. Reconnect and try again.",
+      'warn'
+    );
+    return;
+  }
+
+  // Disable the clicked button while the request is in flight so a double-click
+  // can't fire two departures — the second would land a 409 and leave a success
+  // sitting next to an error. On success refresh() replaces the whole board, so
+  // this button goes away; on any failure path it is re-enabled below.
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch(`/api/arrivals/${arrivalId}/depart`, { method: 'POST' });
+    if (res.ok) {
+      // The departure is logged either way. If the board could not be re-read,
+      // say so: otherwise the clicked button just sits disabled with no sign the
+      // departure worked. It stays disabled, since re-enabling a departed
+      // vessel's button would only invite a 409 (Copilot on #60).
+      if (!(await refresh())) {
+        setBerthsMessage(
+          "Departure logged. The board couldn't refresh just now and will catch up on the next update.",
+          'warn'
+        );
+        berthsRefreshWarning = true;
+      }
+    } else {
+      // Show the server's own words — the read-only 403 message, or a 409 when
+      // the vessel is no longer in a departable state — never a bare code or
+      // silence (SVD-20).
+      if (btn) btn.disabled = false;
+      setBerthsMessage(
+        await readErrorMessage(res, 'The departure could not be logged. Please try again.'),
+        'error'
+      );
+    }
+  } catch {
+    // The connection dropped mid-request. Say so rather than leaving the click
+    // unexplained.
+    if (btn) btn.disabled = false;
+    setBerthsMessage(
+      "Couldn't reach the harbor server to log the departure — check your connection and try again.",
+      'warn'
+    );
+  }
+}
+
 function renderBerths(berths) {
   const list = document.getElementById('berth-list');
   list.replaceChildren();
@@ -443,17 +545,47 @@ function renderBerths(berths) {
     item.appendChild(info);
 
     const occupant = el('div', 'berth-occupant');
+    // Render every occupant, not just the first: a rafting berth can hold
+    // several vessels (lib/berths.js) and the board used to show only
+    // berth.occupant, hiding the rest. occupants comes straight from the berths
+    // endpoint, NOT the type-filtered arrivals list, so a filtered-out vessel
+    // keeps its tile and its Depart button (SVD-18).
+    const occupants = berth.occupants || (berth.occupant ? [berth.occupant] : []);
+
+    // Maintenance and occupancy are independent: POST /:id/maintenance toggles
+    // outOfService without releasing assignments (routes/berths.js), so a berth
+    // can be both. Render each on its own and only say "Available" when neither
+    // applies — otherwise a maintenance flag would hide the Depart controls.
     if (berth.outOfService) {
-      occupant.textContent = '🔧 Maintenance';
+      const maint = el('div', 'maint-line');
+      maint.appendChild(document.createTextNode('🔧 Maintenance'));
       if (berth.maintenanceReason) {
-        const reason = el('span', 'maint-reason', berth.maintenanceReason);
-        reason.className = 'maint-reason';
-        occupant.appendChild(reason);
+        maint.appendChild(el('span', 'maint-reason', berth.maintenanceReason));
       }
-    } else if (berth.occupant) {
-      occupant.appendChild(document.createTextNode(berth.occupant.vesselName));
-      occupant.appendChild(el('span', 'until', `until ${fmtDayTime(berth.occupant.to)}`));
-    } else {
+      occupant.appendChild(maint);
+    }
+
+    for (const occ of occupants) {
+      const line = el('div', 'occupant-line');
+      line.appendChild(document.createTextNode(occ.vesselName));
+      line.appendChild(el('span', 'until', `until ${fmtDayTime(occ.to)}`));
+      // Depart only for occupants the /depart endpoint accepts. An expected
+      // (not-yet-arrived) vessel has no departure to log, and there is no
+      // unassign endpoint — leaving that out of scope (SVD-18).
+      if (occ.status === 'arrived' || occ.status === 'overdue') {
+        const departBtn = el('button', 'btn-depart', 'Depart');
+        departBtn.type = 'button';
+        // Every Depart button reads "Depart"; on a rafted berth that is
+        // ambiguous to assistive tech, which does not pick up the sibling
+        // vessel text, so name the vessel in the accessible label.
+        departBtn.setAttribute('aria-label', `Depart ${occ.vesselName}`);
+        departBtn.addEventListener('click', () => departVessel(occ.arrivalId, departBtn));
+        line.appendChild(departBtn);
+      }
+      occupant.appendChild(line);
+    }
+
+    if (!berth.outOfService && occupants.length === 0) {
       occupant.textContent = 'Available';
     }
     item.appendChild(occupant);
@@ -631,18 +763,28 @@ async function refreshNotifications() {
   }
 }
 
+/**
+ * Re-read and re-render the board. Resolves true when the board on screen is
+ * current (this refresh rendered, or a newer one already had), false when the
+ * reads failed. Callers that just wrote need to know (SVD-18).
+ */
 async function refresh() {
   const seq = ++refreshSeq;
+  let rendered = false;
   const epoch = connectionEpoch;
+  const arrivalsUrl = buildArrivalsUrl();
   try {
-    const arrivalsUrl = buildArrivalsUrl();
     const reads = await Promise.all([
       fetchData(arrivalsUrl),
       fetchData('/api/berths'),
       fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
-    if (seq < appliedSeq) return; // a newer refresh is already on screen
-    appliedSeq = seq;
+    if (seq < renderedSeq) return true; // a newer refresh already rendered
+    // Fetched for a filter that is no longer selected (a newer filter refresh
+    // started and failed): rendering it would show, say, every vessel under a
+    // "Tanker" dropdown. Drop it; the board is not current (Copilot on #60).
+    if (buildArrivalsUrl() !== arrivalsUrl) return false;
+    renderedSeq = seq;
     const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
     renderArrivals(arrivalsRes.arrivals, berthsRes.berths);
@@ -660,6 +802,13 @@ async function refresh() {
     // The board is only as fresh as its oldest read, so that is the time shown.
     // It comes from the responses themselves: offline, these are cached copies
     // still stamped with when they were really fetched.
+    rendered = true;
+    // The board caught up, so a "couldn't refresh" warning is no longer true.
+    // Refusal messages are left alone: they describe an action, not the board.
+    if (berthsRefreshWarning) {
+      berthsRefreshWarning = false;
+      setBerthsMessage(null);
+    }
     lastSyncedAt = Math.min(...reads.map((r) => r.fetchedAt));
     saveLastSynced(lastSyncedAt);
 
@@ -668,12 +817,13 @@ async function refresh() {
     // LIVE only if every read reached the server AND no drop happened while they
     // were in flight; reads from before a drop say nothing about the connection
     // that came back.
-    lastRefreshLive = epoch === connectionEpoch && reads.every((r) => !r.fromCache);
+    lastRefreshLive =
+      epoch === connectionEpoch && seq > failedSeq && reads.every((r) => !r.fromCache);
   } catch {
     // An older refresh failing after a newer one rendered says nothing about the
     // data on screen; drop it rather than downgrade that data to STALE.
-    if (seq < appliedSeq) return;
-    appliedSeq = seq;
+    if (seq < renderedSeq) return true; // newer rendered data is on screen
+    failedSeq = Math.max(failedSeq, seq);
     // Reads failed (offline with a cold cache, or a transient error). The board
     // on screen is the last good render, which is not live — a failed refresh
     // must not leave a stale LIVE badge standing (SVD-21).
@@ -682,6 +832,7 @@ async function refresh() {
 
   renderSyncState();
   await refreshNotifications();
+  return rendered;
 }
 
 function tickClock() {
