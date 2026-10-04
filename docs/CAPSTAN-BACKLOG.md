@@ -6,7 +6,10 @@ Format:
 
 - `- [ ] <title>` — TODO, the loop picks the topmost actionable item
 - `- [x] <title>` — DONE (the loop leaves a PR link as an indented sub-bullet)
-- Any item with a `BLOCKED:` sub-bullet is skipped
+- Any item with a `BLOCKED:` sub-bullet is skipped, permanently, until someone removes it
+- `(blocked-by: <KEY>)` on the item line waits for that item to be checked off, then
+  becomes actionable on its own. Use this for ordering, not `BLOCKED:` (SVD-13 sat
+  behind a stale block that way).
 
 Keep items small and self-contained (≤1 PR of work). Vague items produce vague PRs.
 
@@ -123,11 +126,10 @@ a human decision. Keep it that way.
   - **Fix.** The page has to know it is in demo mode before the user acts. Expose read-only status from the server (for example `readOnly` on `GET /api/health`, or a small `GET /api/config`) and show it once, plainly, in the UI. Then every write control either explains up front or, at minimum, shows the server's own `message` on refusal. Never a bare status code, never silence. Cover **every** write the UI can make: today that's assign and resend. List them in the PR so the next one isn't missed.
   - **Do not** hard-code demo mode in the client or infer it from the hostname. The server already knows (`TIDELOG_READ_ONLY`), so read it from there. Local dev and the tests run writable and must stay writable.
   - **Do not change** the server guard's behaviour or its response body. Other clients rely on the 403.
-  - **Tests, against the real files:** the server reports read-only **both** ways (env set and unset, since the set path is the one that matters on the live site); with read-only on, confirming an assignment shows the server's message and not `403`, and the selection is kept (same as the offline refusal); a refused resend is reported, not swallowed. Load the real `public/app.js` the way `tests/offline-ui.test.js` does. jsdom can't tell you anything is visible, so don't claim it.
+  - **Tests, against the real files:** the server reports read-only **both** ways (env set and unset, since the set path is the one that matters on the live site); with read-only reported, the page renders its one-time read-only explanation (assert the element and its text exist in the real `index.html` + `app.js` DOM, not that it is visible), and with read-only off it does not; with read-only on, confirming an assignment shows the server's message and not `403`, and the selection is kept (same as the offline refusal); a refused resend is reported, not swallowed. Load the real `public/app.js` the way `tests/offline-ui.test.js` does. jsdom can't tell you anything is visible, so don't claim it.
   - Question to answer in the PR: disable the write buttons up front, or leave them enabled and explain on click? Say which and why. A disabled button with no explanation is its own kind of silence.
 
-- [ ] A Depart action on occupied berths — tracked as **SVD-18**
-  - Depends on SVD-20.
+- [ ] A Depart action on occupied berths — tracked as **SVD-18** (blocked-by: SVD-20)
   - **Mechanism.** `POST /api/arrivals/:id/depart` already exists (`routes/arrivals.js:186`). It marks the vessel `departed`, stamps `departedAt`, **releases the berth assignment**, and fires the `departure_logged` webhook. The berth board has no way to call it.
   - **SVD-18's wording is wrong in one place. Do not follow it there:** it says to "remove vessel from Arrivals Log". Don't. A departed vessel **stays in the log** with status `departed`, because departure logging and turnaround stats (`GET /api/stats/turnaround`) depend on the record existing. Removing it would destroy the data this action creates.
   - **Fix.** Add a Depart button to occupied berth tiles whose occupant is `arrived` or `overdue`, calling the existing endpoint, then `refresh()` so the board, the log and the Berths-Occupied stat all update together (that's what satisfies SVD-19). A berth held by a still-`expected` vessel has no departure to log, and there's no unassign endpoint. **Leave that out of scope** and say so in the PR rather than adding a new route.
