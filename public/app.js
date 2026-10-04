@@ -1,6 +1,11 @@
 /* TideLog dashboard — vanilla JS, no build step. */
 
 const REFRESH_MS = 30_000;
+// A board read that hasn't answered by now counts as failed. Refreshes run one
+// at a time (SVD-23), so a read that never settles would hold every later
+// refresh behind it; a timeout turns a hung server into an honest STALE board.
+// `__tidelogRefreshTimeoutMs` exists only so tests needn't wait 15 s.
+const REFRESH_TIMEOUT_MS = window.__tidelogRefreshTimeoutMs || 15_000;
 const REFERENCE_DRAFT_M = 7.0;
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
@@ -58,13 +63,47 @@ async function readErrorMessage(res, fallback) {
  * (SVD-21) — `navigator.onLine` only reports a network interface, not whether
  * the harbor server actually answered.
  */
-async function fetchData(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+/**
+ * Fetch and parse JSON under a deadline that CANCELS, covering the body as well
+ * as the headers. A timeout that only stops waiting leaves the request open (a
+ * dead server would collect three more per cycle and exhaust per-origin
+ * connections), and one that ends when headers arrive misses a server that
+ * sends headers then stalls the body (Copilot on #61). `cycleSignal` lets a
+ * refresh cycle cancel its sibling reads once one has failed.
+ */
+async function fetchJsonWithTimeout(url, cycleSignal) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (cycleSignal) {
+    if (cycleSignal.aborted) abort();
+    else cycleSignal.addEventListener('abort', abort, { once: true });
+  }
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`${url} timed out`));
+    }, REFRESH_TIMEOUT_MS);
+  });
+  const read = (async () => {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+    return { res, body: await res.json() };
+  })();
+  try {
+    return await Promise.race([read, timeout]);
+  } finally {
+    clearTimeout(timer);
+    if (cycleSignal) cycleSignal.removeEventListener('abort', abort);
+  }
+}
+
+async function fetchData(url, cycleSignal) {
+  const { res, body } = await fetchJsonWithTimeout(url, cycleSignal);
   const get = res.headers && res.headers.get ? (name) => res.headers.get(name) : () => null;
   const stamped = Number(get('X-TideLog-Fetched-At'));
   return {
-    data: await res.json(),
+    data: body,
     fetchedAt: stamped > 0 ? stamped : Date.now(),
     fromCache: get('X-TideLog-From-Cache') === '1',
   };
@@ -92,25 +131,44 @@ let lastRefreshLive = null;
 // read has landed (Copilot on #59). Recording `false` is always safe.
 let connectionEpoch = 0;
 
-// Refreshes overlap (the 30 s timer, the type filter, reconnect) and can land out
-// of order. Each one takes a sequence number when it starts; a result older than
-// what is already on screen is dropped whole, success or failure. Otherwise an
-// older cached result could replace newer fresh data under its LIVE badge, or an
-// older failure could downgrade newer live data to STALE (Copilot on #59).
+// One refresh at a time (SVD-23). Refreshes are requested from several places
+// (the 30 s timer, the type filter, reconnect, a successful Depart) and used to
+// run concurrently, finishing in any order; every fix for that (sequence marks,
+// a filter-key check) found another seam. Now a request while one is running is
+// coalesced into a single follow-up that starts when it finishes, so completion
+// order is start order by construction.
 //
-// Two marks, not one. `renderedSeq` is the newest refresh that actually RENDERED;
-// only a result older than that is dropped. `failedSeq` is the newest refresh that
-// FAILED; a success older than it still renders (its data is newer than what is on
-// screen) but cannot claim LIVE, because a later attempt could not reach the
-// server. A single mark advanced by failures too made "older than applied" mean
-// "a newer attempt failed", so a slow success was dropped and reported as
-// rendered when nothing had been (Copilot on #60).
-let refreshSeq = 0;
+// The same rule serves the board and the notifications panel, so it lives in one
+// helper. A caller that just wrote (Depart, Resend) gets the result of a run that
+// STARTED after its write: the follow-up, if one was already running.
+function singleFlight(run) {
+  let inFlight = null; // the running cycle's promise
+  let queued = null; // the one follow-up, if anything asked while running
+  const call = () => {
+    if (!inFlight) {
+      inFlight = run().finally(() => {
+        inFlight = null;
+      });
+      return inFlight;
+    }
+    if (!queued) {
+      // Starts once the running cycle has settled (its finally() has cleared
+      // inFlight), and reads the state at THAT time. A rejection must not
+      // strand the follow-up, hence the catch.
+      queued = inFlight
+        .catch(() => {})
+        .then(() => {
+          queued = null;
+          return call();
+        });
+    }
+    return queued;
+  };
+  return call;
+}
 // True while #berths-message holds the post-depart "couldn't refresh" warning, so
 // the next successful render can clear it without erasing a refusal.
 let berthsRefreshWarning = false;
-let renderedSeq = 0;
-let failedSeq = 0;
 
 function loadLastSynced() {
   try {
@@ -754,37 +812,39 @@ function renderNotifications(deliveries) {
   }
 }
 
-async function refreshNotifications() {
+// Notifications run outside the board's cycle and get the same rule: one at a
+// time, with requests coalesced into one follow-up. Not skipped: a skip dropped
+// a manual Resend's post-write refresh whenever an automatic read was pending,
+// leaving a pre-resend snapshot on screen (Copilot on #61). Coalescing still
+// bounds a hung endpoint to one running request plus one queued.
+async function runNotifications() {
   try {
-    const data = await fetchJson('/api/webhooks/deliveries?limit=20');
-    renderNotifications(data.deliveries);
+    const { body } = await fetchJsonWithTimeout('/api/webhooks/deliveries?limit=20');
+    renderNotifications(body.deliveries);
   } catch {
     // Non-fatal; keep showing last known state.
   }
 }
+const refreshNotifications = singleFlight(runNotifications);
 
 /**
- * Re-read and re-render the board. Resolves true when the board on screen is
- * current (this refresh rendered, or a newer one already had), false when the
- * reads failed. Callers that just wrote need to know (SVD-18).
+ * Re-read and re-render the board, one cycle at a time (SVD-23). Resolves true
+ * when the board on screen is current, false when the reads failed.
  */
-async function refresh() {
-  const seq = ++refreshSeq;
+const refresh = singleFlight(runRefresh);
+
+async function runRefresh() {
   let rendered = false;
   const epoch = connectionEpoch;
-  const arrivalsUrl = buildArrivalsUrl();
+  // One controller per cycle: the first read to fail cancels its siblings
+  // instead of leaving them to run out their own timeouts.
+  const cycle = new AbortController();
   try {
     const reads = await Promise.all([
-      fetchData(arrivalsUrl),
-      fetchData('/api/berths'),
-      fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
+      fetchData(buildArrivalsUrl(), cycle.signal),
+      fetchData('/api/berths', cycle.signal),
+      fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`, cycle.signal),
     ]);
-    if (seq < renderedSeq) return true; // a newer refresh already rendered
-    // Fetched for a filter that is no longer selected (a newer filter refresh
-    // started and failed): rendering it would show, say, every vessel under a
-    // "Tanker" dropdown. Drop it; the board is not current (Copilot on #60).
-    if (buildArrivalsUrl() !== arrivalsUrl) return false;
-    renderedSeq = seq;
     const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
     renderArrivals(arrivalsRes.arrivals, berthsRes.berths);
@@ -812,18 +872,13 @@ async function refresh() {
     lastSyncedAt = Math.min(...reads.map((r) => r.fetchedAt));
     saveLastSynced(lastSyncedAt);
 
-    // LIVE only if EVERY read reached the server. If any came from the SW's
-    // fallback cache, the board is current-looking but stale (SVD-21).
-    // LIVE only if every read reached the server AND no drop happened while they
-    // were in flight; reads from before a drop say nothing about the connection
-    // that came back.
-    lastRefreshLive =
-      epoch === connectionEpoch && seq > failedSeq && reads.every((r) => !r.fromCache);
+    // LIVE only if every read reached the server (none came from the SW's
+    // fallback cache, SVD-21) AND no drop happened while they were in flight:
+    // even one cycle can straddle a drop, and reads from before it say nothing
+    // about the connection that came back.
+    lastRefreshLive = epoch === connectionEpoch && reads.every((r) => !r.fromCache);
   } catch {
-    // An older refresh failing after a newer one rendered says nothing about the
-    // data on screen; drop it rather than downgrade that data to STALE.
-    if (seq < renderedSeq) return true; // newer rendered data is on screen
-    failedSeq = Math.max(failedSeq, seq);
+    cycle.abort();
     // Reads failed (offline with a cold cache, or a transient error). The board
     // on screen is the last good render, which is not live — a failed refresh
     // must not leave a stale LIVE badge standing (SVD-21).
@@ -831,7 +886,10 @@ async function refresh() {
   }
 
   renderSyncState();
-  await refreshNotifications();
+  // Not awaited: the notifications panel is independent of the board's
+  // freshness, so it has its own one-at-a-time guard and timeout rather than
+  // riding (and delaying) the board's single-flight cycle.
+  refreshNotifications();
   return rendered;
 }
 

@@ -60,6 +60,7 @@ async function bootApp({
   readOnly = false,
   writeRes = null,
   html = (text) => text,
+  refreshTimeoutMs,
 } = {}) {
   const pageRes = await request(app).get('/');
   const dom = new JSDOM(html(pageRes.text), {
@@ -100,6 +101,7 @@ async function bootApp({
   };
 
   setOnline(window, online);
+  if (refreshTimeoutMs) window.__tidelogRefreshTimeoutMs = refreshTimeoutMs;
 
   window.eval(APP_JS);
   await flush();
@@ -635,49 +637,202 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     window.document.getElementById('type-filter').dispatchEvent(new window.Event('change'));
   }
 
-  test('an older refresh failing after a newer one succeeded does not downgrade it', async () => {
+  test('a refresh requested mid-run waits, and several requests coalesce into one follow-up', async () => {
+    // SVD-23: refreshes used to run concurrently and finish in any order. Now a
+    // request while one runs issues no fetch; however many arrive, exactly one
+    // follow-up runs after the current cycle.
     const { window } = await bootApp({ online: true, fromCache: false });
-    const older = holdBoardReads(window);
+    const first = holdBoardReads(window);
     startRefresh(window);
     await flush();
-    const newer = holdBoardReads(window);
+    expect(first.length).toBe(3);
+
     startRefresh(window);
+    startRefresh(window);
+    window.dispatchEvent(new window.Event('online')); // reconnect also asks
     await flush();
-    expect(older.length).toBe(3);
-    expect(newer.length).toBe(3);
+    expect(first.length).toBe(3); // nothing new while the first is running
 
-    for (const r of newer) r.resolve(makeRes(boardBody(r.u, 'MV Newer'), { fromCache: false }));
+    for (const r of first) r.resolve(makeRes(boardBody(r.u, 'MV First'), { fromCache: false }));
     await flush();
-    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
-
-    for (const r of older) r.reject(new Error('network'));
-    await flush();
-    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
-    expect(window.document.getElementById('arrivals-body').textContent).toContain('MV Newer');
+    expect(first.length).toBe(6); // exactly one follow-up cycle, not three
   });
 
-  test('an older cached result landing after a newer fresh one cannot replace it under LIVE', async () => {
-    // Copilot on #59: refresh A starts before a drop, reconnect refresh B lands
-    // fresh, then A lands from cache. A must not replace B's board while the
-    // badge still says LIVE.
+  test('a hung notifications request does not hold up the next board refresh', async () => {
+    // Copilot on #61: the cycle used to await refreshNotifications(), whose
+    // endpoint is network-only with no timeout, so one hung request held the
+    // single-flight lock forever.
     const { window } = await bootApp({ online: true, fromCache: false });
-    const a = holdBoardReads(window);
+    const boardReads = [];
+    window.fetch = (url) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) return new Promise(() => {}); // never answers
+      boardReads.push(u);
+      return Promise.resolve(makeRes(boardBody(u, 'MV Any'), { fromCache: false }));
+    };
     startRefresh(window);
     await flush();
-
-    setOnline(window, false);
-    window.dispatchEvent(new window.Event('offline'));
-    const b = holdBoardReads(window);
-    setOnline(window, true);
-    window.dispatchEvent(new window.Event('online')); // starts refresh B
+    const afterFirst = boardReads.length;
+    startRefresh(window);
     await flush();
-    expect(b.length).toBe(3);
+    expect(afterFirst).toBe(3);
+    expect(boardReads.length).toBe(6); // the second cycle ran
+  });
 
-    for (const r of b) r.resolve(makeRes(boardBody(r.u, 'MV Fresh'), { fromCache: false }));
+  test('headers that arrive but a body that stalls still time out and free the lock', async () => {
+    // Copilot on #61: the deadline used to end when fetch() resolved (headers),
+    // so a stalled body held the cycle forever.
+    const { window } = await bootApp({ online: true, fromCache: false, refreshTimeoutMs: 40 });
+    let stall = true;
+    const boardReads = [];
+    window.fetch = (url) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      boardReads.push(u);
+      if (stall) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: () => new Promise(() => {}), // body never finishes
+        });
+      }
+      return Promise.resolve(makeRes(boardBody(u, 'MV Back'), { fromCache: false }));
+    };
+    startRefresh(window);
     await flush();
+    await new Promise((r) => setTimeout(r, 80));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
+
+    stall = false;
+    startRefresh(window);
+    await flush();
+    expect(boardReads.length).toBe(6);
     expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+  });
 
-    for (const r of a) r.resolve(makeRes(boardBody(r.u, 'MV Cached'), { fromCache: true }));
+  test('when one board read fails, its siblings are cancelled at once', async () => {
+    // Copilot on #61: Promise.all rejects on the first failure but left the
+    // other reads running until their own timeouts. The default 15 s timeout is
+    // in force here, so an abort can only come from the cycle.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    const signals = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      if (u.includes('/api/arrivals')) return Promise.reject(new Error('network'));
+      signals.push(opts && opts.signal);
+      return new Promise(() => {}); // berths and tides hang
+    };
+    startRefresh(window);
+    await flush();
+    expect(signals.length).toBe(2);
+    expect(signals.every((sig) => sig && sig.aborted)).toBe(true);
+  });
+
+  test('a Resend during a pending notifications read still gets a read after its write', async () => {
+    // Copilot on #61: the notifications guard used to SKIP a request while one
+    // was pending, so a manual Resend's post-write refresh was dropped and the
+    // older read could leave a pre-resend snapshot on screen.
+    const { window } = await bootApp({ online: true, fromCache: false, deliveries: [DELIVERY] });
+    const { document } = window;
+    const reads = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === 'POST') return Promise.resolve(makeRes({}));
+      if (u.includes('/api/webhooks')) return new Promise((resolve) => reads.push(resolve)); // controlled
+      return Promise.resolve(makeRes(boardBody(u, 'MV Any'), { fromCache: false }));
+    };
+    startRefresh(window); // board cycle starts an automatic notifications read
+    await flush();
+    expect(reads.length).toBe(1);
+
+    document.querySelector('.btn-resend').click(); // POST ok, then wants a re-read
+    await flush();
+    expect(reads.length).toBe(1); // still only the pending automatic read
+
+    reads[0](makeRes({ deliveries: [{ ...DELIVERY, vesselName: 'MV Before Resend' }] }));
+    await flush();
+    expect(reads.length).toBe(2); // the follow-up started after the write
+    reads[1](makeRes({ deliveries: [{ ...DELIVERY, vesselName: 'MV After Resend' }] }));
+    await flush();
+    const panel = document.getElementById('notifications-body').textContent;
+    expect(panel).toContain('MV After Resend');
+    expect(panel).not.toContain('MV Before Resend');
+  });
+
+  test('notifications never overlap: a pending request is not joined by another', async () => {
+    // Copilot on #61: with notifications outside the board cycle, each cycle
+    // started another fetch while the last was pending, piling up against a hung
+    // endpoint and letting an older snapshot land after a newer one.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    let webhookCalls = 0;
+    window.fetch = (url) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) {
+        webhookCalls += 1;
+        return new Promise(() => {}); // hung
+      }
+      return Promise.resolve(makeRes(boardBody(u, 'MV Any'), { fromCache: false }));
+    };
+    for (let i = 0; i < 3; i += 1) {
+      startRefresh(window);
+      await flush();
+    }
+    expect(webhookCalls).toBe(1);
+  });
+
+  test('a board read that never answers times out: STALE, and the next refresh runs', async () => {
+    const { window } = await bootApp({ online: true, fromCache: false, refreshTimeoutMs: 40 });
+    let hang = true;
+    const boardReads = [];
+    const signals = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      boardReads.push(u);
+      if (hang) {
+        signals.push(opts && opts.signal);
+        return new Promise(() => {}); // a server that never answers
+      }
+      return Promise.resolve(makeRes(boardBody(u, 'MV Back'), { fromCache: false }));
+    };
+    startRefresh(window);
+    await flush();
+    await new Promise((r) => setTimeout(r, 80)); // past the 40 ms timeout
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
+    // The hung requests were cancelled, not just abandoned: left open, each
+    // cycle against a dead server would add three more (Copilot on #61).
+    expect(signals.length).toBe(3);
+    expect(signals.every((sig) => sig && sig.aborted)).toBe(true);
+
+    hang = false;
+    startRefresh(window);
+    await flush();
+    expect(boardReads.length).toBe(6); // the lock was released
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+  });
+
+  test('the follow-up is what stays on screen: cached first, fresh after, ends LIVE', async () => {
+    // The intent of the old "older cached result cannot replace newer fresh one"
+    // case, now guaranteed by order: the cached cycle renders first, the
+    // follow-up second, and the badge reflects the follow-up.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    const held = holdBoardReads(window);
+    startRefresh(window);
+    await flush();
+    startRefresh(window); // queued follow-up
+    await flush();
+
+    for (const r of held.splice(0, 3))
+      r.resolve(makeRes(boardBody(r.u, 'MV Cached'), { fromCache: true }));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
+
+    expect(held.length).toBe(3); // the follow-up's reads, issued only now
+    for (const r of held) r.resolve(makeRes(boardBody(r.u, 'MV Fresh'), { fromCache: false }));
     await flush();
     const board = window.document.getElementById('arrivals-body').textContent;
     expect(board).toContain('MV Fresh');
@@ -1003,10 +1158,9 @@ describe('SVD-18 Depart action on occupied berths', () => {
     expect(departPosts).toBe(1);
   });
 
-  test('a refresh fetched for a filter no longer selected does not render', async () => {
-    // Copilot on #60: refresh A starts unfiltered, the user picks "tanker"
-    // (refresh B), B fails, then A succeeds. Rendering A would list every vessel
-    // under a "Tanker" dropdown.
+  test('a filter change during a refresh is applied by the follow-up', async () => {
+    // SVD-23 replaces the old filter-key check: a refresh for the old filter
+    // finishes first, then the follow-up fetches for the filter now selected.
     const { window } = await bootApp({ online: true, arrivals: [EXPECTED_VESSEL] });
     const { document } = window;
     const held = [];
@@ -1020,16 +1174,12 @@ describe('SVD-18 Depart action on occupied berths', () => {
     const filter = document.getElementById('type-filter');
     filter.dispatchEvent(new window.Event('change')); // A: unfiltered
     await flush();
-    const a = held.splice(0);
     filter.value = 'tanker';
-    filter.dispatchEvent(new window.Event('change')); // B: tanker
+    filter.dispatchEvent(new window.Event('change')); // queued behind A
     await flush();
-    const b = held.splice(0);
-    expect(b.find((r) => r.u.includes('/api/arrivals')).u).toContain('type=tanker');
+    expect(held.length).toBe(3);
 
-    for (const r of b) r.reject(new Error('network'));
-    await flush();
-    for (const r of a) {
+    for (const r of held.splice(0, 3)) {
       const body = r.u.includes('arrivals')
         ? { arrivals: [{ ...EXPECTED_VESSEL, vesselName: 'MV Unfiltered Cargo' }] }
         : r.u.includes('berths')
@@ -1038,11 +1188,21 @@ describe('SVD-18 Depart action on occupied berths', () => {
       r.resolve(makeRes(body, { fromCache: false }));
     }
     await flush();
-    expect(document.getElementById('arrivals-body').textContent).not.toContain(
-      'MV Unfiltered Cargo'
-    );
+    const follow = held.find((r) => r.u.includes('/api/arrivals'));
+    expect(follow.u).toContain('type=tanker'); // the follow-up reads the new filter
+    for (const r of held) {
+      const body = r.u.includes('arrivals')
+        ? { arrivals: [{ ...EXPECTED_VESSEL, vesselType: 'tanker', vesselName: 'MV Tanker Only' }] }
+        : r.u.includes('berths')
+          ? { berths: [] }
+          : { windows: [] };
+      r.resolve(makeRes(body, { fromCache: false }));
+    }
+    await flush();
+    const board = document.getElementById('arrivals-body').textContent;
+    expect(board).toContain('MV Tanker Only');
+    expect(board).not.toContain('MV Unfiltered Cargo');
   });
-
   test('the "couldn\'t refresh" warning clears once the board catches up, a refusal does not', async () => {
     const { window } = await bootApp({
       online: true,
@@ -1097,10 +1257,11 @@ describe('SVD-18 Depart action on occupied berths', () => {
     expect(msg.textContent.toLowerCase()).toContain('read-only demo');
   });
 
-  test('a slow post-depart refresh that lands after a newer failed one still renders', async () => {
-    // Copilot on #60: a failed refresh used to advance the same mark a render
-    // did, so a slow success landing after it was dropped as "older than what is
-    // on screen" and reported as rendered when nothing had been.
+  test('a refresh started before a Depart cannot clear the post-depart warning (SVD-23)', async () => {
+    // The case deferred from #60: a pre-depart refresh landing after the
+    // post-depart warning rendered the old board and cleared the warning. Now
+    // the pre-depart cycle finishes first and the post-depart follow-up runs
+    // after it, so its failure is the last word.
     const { window } = await bootApp({
       online: true,
       berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
@@ -1114,33 +1275,28 @@ describe('SVD-18 Depart action on occupied berths', () => {
         return new Promise((resolve, reject) => held.push({ u, resolve, reject }));
       return Promise.resolve(makeRes({ deliveries: [] }));
     };
+    document.getElementById('type-filter').dispatchEvent(new window.Event('change')); // pre-depart
+    await flush();
+    departButtons(document)[0].click(); // POST ok; its refresh queues behind
+    await flush();
+    expect(held.length).toBe(3); // only the pre-depart cycle is reading
 
-    departButtons(document)[0].click(); // POST ok, post-depart refresh A held
-    await flush();
-    const a = held.splice(0);
-    document.getElementById('type-filter').dispatchEvent(new window.Event('change')); // refresh B
-    await flush();
-    const b = held.splice(0);
-    expect(a.length).toBe(3);
-    expect(b.length).toBe(3);
-
-    for (const r of b) r.reject(new Error('network')); // B, newer, fails first
-    await flush();
-    for (const r of a) {
+    for (const r of held.splice(0, 3)) {
       const body = r.u.includes('berths')
-        ? { berths: [berthWith([])] }
+        ? { berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])] }
         : r.u.includes('arrivals')
           ? { arrivals: [] }
           : { windows: [] };
-      r.resolve(makeRes(body, { fromCache: false })); // A, older, succeeds
+      r.resolve(makeRes(body, { fromCache: false }));
     }
     await flush();
+    expect(held.length).toBe(3); // now the post-depart follow-up
+    for (const r of held) r.reject(new Error('network'));
+    await flush();
 
-    // A rendered: the departed vessel's button is gone and no "couldn't refresh"
-    // warning was raised for a board that did refresh.
-    expect(departButtons(document).length).toBe(0);
-    expect(document.getElementById('berths-message').textContent).not.toContain("couldn't refresh");
-    // But a later attempt failed, so A cannot claim LIVE.
+    const msg = document.getElementById('berths-message');
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent).toContain('Departure logged');
     expect(document.getElementById('status-badge').textContent).not.toBe('LIVE');
   });
 });
