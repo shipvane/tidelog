@@ -9,8 +9,13 @@
  * ratio. Every rule that sets BOTH a text colour and a solid background must
  * reach 4.5:1 (AA, normal-size text). A descendant rule (`.a .b`) that sets
  * only a text colour is checked against the background `.a` sets, since that is
- * what it sits on (Copilot on #62 found `.window-chip .dur` that way). Other
- * cascade cases (a hover setting only `color`) are not modelled.
+ * what it sits on (Copilot on #62 found `.window-chip .dur` that way).
+ *
+ * What a CSS-only scan CANNOT see: nesting that exists only in the DOM app.js
+ * builds. `.berth-option-specs` is written as a standalone class, but app.js
+ * renders it inside `.berth-option`, whose :hover turns --teal-soft. Those pairs
+ * are pinned in NESTED_PAIRS below; add one whenever a coloured text class is
+ * rendered inside a coloured container.
  *
  * It also enforces CLAUDE.md's rule that colours come from the custom
  * properties: no literal hex outside `:root`.
@@ -79,6 +84,14 @@ function rulesWithTextAndBackground() {
   return out;
 }
 
+// [rule that sets the text colour, rule that sets the background it sits on]
+// for nesting the stylesheet alone does not show (see header).
+const NESTED_PAIRS = [
+  ['.window-chip .dur', '.window-chip'],
+  ['.berth-option-specs', '.berth-option'], // at rest: on the card
+  ['.berth-option:hover .berth-option-specs', '.berth-option:hover'],
+];
+
 describe('SVD-22 colour rules in public/styles.css', () => {
   test('no literal hex colours outside :root (CLAUDE.md)', () => {
     const withoutComments = RULES_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -102,6 +115,16 @@ describe('SVD-22 colour rules in public/styles.css', () => {
     const dur = rulesWithTextAndBackground().find((r) => r.selector === '.window-chip .dur');
     expect(dur).toBeDefined(); // the inherited pair is actually found
     expect(dur.ratio).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test.each(NESTED_PAIRS)('%s on %s reaches 4.5:1', (textSel, bgSel) => {
+    const rules = parseRules();
+    const text = rules.find((r) => r.selector === textSel && r.fg);
+    const bg = rules.find((r) => r.selector === bgSel);
+    expect(text).toBeDefined(); // a renamed selector must fail loudly, not pass
+    expect(bg).toBeDefined();
+    const back = bg.back || resolve('var(--card)'); // no background set: the card
+    expect(contrast(text.fg, back)).toBeGreaterThanOrEqual(4.5);
   });
 
   test.each([

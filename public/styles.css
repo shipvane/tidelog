@@ -819,6 +819,11 @@ td.notif-retry {
   color: var(--muted);
 }
 
+/* The hovered option turns --teal-soft, where --muted is 4.38:1 (SVD-22). */
+.berth-option:hover .berth-option-specs {
+  color: var(--teal-text);
+}
+
 .modal-foot {
   display: flex;
   gap: 0.6rem;
