@@ -518,7 +518,7 @@ td .imo {
 }
 
 /* No solid-brass fill on hover: every text colour fails AA on --brass (white
-   3.61:1, ink 4.16:1). Card + ink stays readable (and uses tokens, not var(--card)). */
+   3.61:1, ink 4.16:1). Card + ink stays readable, and uses tokens rather than a literal white. */
 .btn-depart:hover:not(:disabled) {
   background: var(--card);
   color: var(--ink);
@@ -563,7 +563,8 @@ td .imo {
   display: block;
   font-size: 0.7rem;
   font-weight: 500;
-  color: var(--muted);
+  /* Sits on the chip's --teal-soft, where --muted is 4.38:1 (SVD-22). */
+  color: var(--teal-text);
 }
 
 /* ---------- notifications panel ---------- */

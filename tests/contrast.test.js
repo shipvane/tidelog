@@ -7,8 +7,10 @@
  * anything: it parses the stylesheet, resolves each rule's `color` and
  * `background` through the `:root` tokens, and computes the WCAG 2 contrast
  * ratio. Every rule that sets BOTH a text colour and a solid background must
- * reach 4.5:1 (AA, normal-size text). A rule that sets only one of them (most
- * hover states) is not checked here; its pair depends on the cascade.
+ * reach 4.5:1 (AA, normal-size text). A descendant rule (`.a .b`) that sets
+ * only a text colour is checked against the background `.a` sets, since that is
+ * what it sits on (Copilot on #62 found `.window-chip .dur` that way). Other
+ * cascade cases (a hover setting only `color`) are not modelled.
  *
  * It also enforces CLAUDE.md's rule that colours come from the custom
  * properties: no literal hex outside `:root`.
@@ -47,17 +49,32 @@ function contrast(a, b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-function rulesWithTextAndBackground() {
-  const out = [];
-  for (const m of RULES_CSS.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
-    const selector = m[1].replace(/\/\*[\s\S]*?\*\//g, '').trim();
+function parseRules() {
+  return [...RULES_CSS.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((m) => {
     const body = m[2];
     const color = body.match(/(?<![-\w])color:\s*([^;]+);/);
     const bg = body.match(/background(?:-color)?:\s*([^;]+);/);
-    if (!color || !bg) continue;
-    const fg = resolve(color[1]);
-    const back = resolve(bg[1]);
-    if (fg && back) out.push({ selector, fg, back, ratio: contrast(fg, back) });
+    return {
+      selector: m[1].replace(/\/\*[\s\S]*?\*\//g, '').trim(),
+      fg: color ? resolve(color[1]) : null,
+      back: bg ? resolve(bg[1]) : null,
+    };
+  });
+}
+
+function rulesWithTextAndBackground() {
+  const rules = parseRules();
+  const backgroundOf = new Map(rules.filter((r) => r.back).map((r) => [r.selector, r.back]));
+  const out = [];
+  for (const r of rules) {
+    if (!r.fg) continue;
+    let back = r.back;
+    if (!back) {
+      // `.a .b` with only a colour: it sits on whatever background `.a` sets.
+      const parts = r.selector.split(/\s+/);
+      if (parts.length > 1) back = backgroundOf.get(parts.slice(0, -1).join(' ')) || null;
+    }
+    if (back) out.push({ selector: r.selector, fg: r.fg, back, ratio: contrast(r.fg, back) });
   }
   return out;
 }
@@ -65,7 +82,10 @@ function rulesWithTextAndBackground() {
 describe('SVD-22 colour rules in public/styles.css', () => {
   test('no literal hex colours outside :root (CLAUDE.md)', () => {
     const withoutComments = RULES_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
-    expect(withoutComments.match(/#[0-9a-f]{3,6}\b/gi) || []).toEqual([]);
+    // 3, 4, 6 and 8 digits: #rgb, #rgba, #rrggbb, #rrggbbaa (Copilot on #62).
+    expect(
+      withoutComments.match(/#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{4}|[0-9a-f]{3})\b/gi) || []
+    ).toEqual([]);
   });
 
   test('every rule with both a text colour and a background reaches 4.5:1', () => {
@@ -76,6 +96,12 @@ describe('SVD-22 colour rules in public/styles.css', () => {
       .filter((r) => r.ratio < 4.5)
       .map((r) => `${r.selector}: ${r.fg} on ${r.back} = ${r.ratio.toFixed(2)}:1`);
     expect(failing).toEqual([]);
+  });
+
+  test('a descendant text colour is checked against its parent background', () => {
+    const dur = rulesWithTextAndBackground().find((r) => r.selector === '.window-chip .dur');
+    expect(dur).toBeDefined(); // the inherited pair is actually found
+    expect(dur.ratio).toBeGreaterThanOrEqual(4.5);
   });
 
   test.each([
