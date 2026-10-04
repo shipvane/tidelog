@@ -733,6 +733,33 @@ describe('SVD-18 Depart action on occupied berths', () => {
     );
   });
 
+  test('a logged departure whose board refresh fails still says it was logged', async () => {
+    // Copilot on #60: refresh() swallows its own failures, so a successful POST
+    // followed by a failed re-read left the clicked button disabled with no sign
+    // the departure had worked.
+    const { window } = await bootApp({
+      online: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+    });
+    const { document } = window;
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === 'POST') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u)) return Promise.reject(new Error('network'));
+      return Promise.resolve(makeRes({ deliveries: [] }));
+    };
+    const btn = departButtons(document)[0];
+    btn.click();
+    await flush();
+
+    const msg = document.getElementById('berths-message');
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent).toContain('Departure logged');
+    // Still disabled: the vessel has departed, so offering Depart again would
+    // only earn a 409.
+    expect(btn.disabled).toBe(true);
+  });
+
   test('departing one rafted vessel removes it from the berth and keeps it in the log as departed', async () => {
     const { window } = await bootApp({
       online: true,

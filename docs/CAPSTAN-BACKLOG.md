@@ -136,8 +136,9 @@ a human decision. Keep it that way.
     and offers a per-occupant Depart button for `arrived`/`overdue` occupants that POSTs
     the existing `/api/arrivals/:id/depart` then `refresh()`es. `berthView` adds a
     `status` to each occupant entry (additive; `occupant` and its fields unchanged) so
-    eligibility never joins the type-filtered arrivals list. Refusals (read-only 403,
-    409, offline) surface the server's own message in a new `#berths-message` box;
+    eligibility never joins the type-filtered arrivals list. Server refusals (read-only
+    403, 409) surface the server's own message in a new `#berths-message` box; offline is
+    refused client-side before any request, with its own notice;
     departed vessels stay in the log. `expected`-only berths and unassign are out of scope.
   - **Mechanism.** `POST /api/arrivals/:id/depart` already exists (`routes/arrivals.js:186`). It marks the vessel `departed`, stamps `departedAt`, **releases the berth assignment**, and fires the `departure_logged` webhook. The berth board has no way to call it.
   - **SVD-18's wording is wrong in one place. Do not follow it there:** it says to "remove vessel from Arrivals Log". Don't. A departed vessel **stays in the log** with status `departed`, because departure logging and turnaround stats (`GET /api/stats/turnaround`) depend on the record existing. Removing it would destroy the data this action creates.

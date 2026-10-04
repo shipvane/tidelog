@@ -472,7 +472,16 @@ async function departVessel(arrivalId, btn) {
   try {
     const res = await fetch(`/api/arrivals/${arrivalId}/depart`, { method: 'POST' });
     if (res.ok) {
-      await refresh();
+      // The departure is logged either way. If the board could not be re-read,
+      // say so: otherwise the clicked button just sits disabled with no sign the
+      // departure worked. It stays disabled, since re-enabling a departed
+      // vessel's button would only invite a 409 (Copilot on #60).
+      if (!(await refresh())) {
+        setBerthsMessage(
+          "Departure logged. The board couldn't refresh just now and will catch up on the next update.",
+          'warn'
+        );
+      }
     } else {
       // Show the server's own words — the read-only 403 message, or a 409 when
       // the vessel is no longer in a departable state — never a bare code or
@@ -729,8 +738,14 @@ async function refreshNotifications() {
   }
 }
 
+/**
+ * Re-read and re-render the board. Resolves true when the board on screen is
+ * current (this refresh rendered, or a newer one already had), false when the
+ * reads failed. Callers that just wrote need to know (SVD-18).
+ */
 async function refresh() {
   const seq = ++refreshSeq;
+  let rendered = false;
   const epoch = connectionEpoch;
   try {
     const arrivalsUrl = buildArrivalsUrl();
@@ -739,7 +754,7 @@ async function refresh() {
       fetchData('/api/berths'),
       fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
-    if (seq < appliedSeq) return; // a newer refresh is already on screen
+    if (seq < appliedSeq) return true; // a newer refresh is already on screen
     appliedSeq = seq;
     const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
@@ -758,6 +773,7 @@ async function refresh() {
     // The board is only as fresh as its oldest read, so that is the time shown.
     // It comes from the responses themselves: offline, these are cached copies
     // still stamped with when they were really fetched.
+    rendered = true;
     lastSyncedAt = Math.min(...reads.map((r) => r.fetchedAt));
     saveLastSynced(lastSyncedAt);
 
@@ -770,7 +786,7 @@ async function refresh() {
   } catch {
     // An older refresh failing after a newer one rendered says nothing about the
     // data on screen; drop it rather than downgrade that data to STALE.
-    if (seq < appliedSeq) return;
+    if (seq < appliedSeq) return true; // newer data is on screen
     appliedSeq = seq;
     // Reads failed (offline with a cold cache, or a transient error). The board
     // on screen is the last good render, which is not live — a failed refresh
@@ -780,6 +796,7 @@ async function refresh() {
 
   renderSyncState();
   await refreshNotifications();
+  return rendered;
 }
 
 function tickClock() {
