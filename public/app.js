@@ -64,14 +64,20 @@ async function readErrorMessage(res, fallback) {
  * the harbor server actually answered.
  */
 /**
- * fetch() with a deadline that CANCELS. A timeout that only stops waiting
- * leaves the request open, and against a server that never answers every cycle
- * would leave three more, enough to exhaust the browser's per-origin
- * connections (Copilot on #61). Aborting frees the connection; the race keeps
- * the deadline even if a fetch ignores the signal.
+ * Fetch and parse JSON under a deadline that CANCELS, covering the body as well
+ * as the headers. A timeout that only stops waiting leaves the request open (a
+ * dead server would collect three more per cycle and exhaust per-origin
+ * connections), and one that ends when headers arrive misses a server that
+ * sends headers then stalls the body (Copilot on #61). `cycleSignal` lets a
+ * refresh cycle cancel its sibling reads once one has failed.
  */
-async function fetchWithTimeout(url) {
+async function fetchJsonWithTimeout(url, cycleSignal) {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (cycleSignal) {
+    if (cycleSignal.aborted) abort();
+    else cycleSignal.addEventListener('abort', abort, { once: true });
+  }
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
@@ -79,20 +85,25 @@ async function fetchWithTimeout(url) {
       reject(new Error(`${url} timed out`));
     }, REFRESH_TIMEOUT_MS);
   });
+  const read = (async () => {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+    return { res, body: await res.json() };
+  })();
   try {
-    return await Promise.race([fetch(url, { signal: controller.signal }), timeout]);
+    return await Promise.race([read, timeout]);
   } finally {
     clearTimeout(timer);
+    if (cycleSignal) cycleSignal.removeEventListener('abort', abort);
   }
 }
 
-async function fetchData(url) {
-  const res = await fetchWithTimeout(url);
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+async function fetchData(url, cycleSignal) {
+  const { res, body } = await fetchJsonWithTimeout(url, cycleSignal);
   const get = res.headers && res.headers.get ? (name) => res.headers.get(name) : () => null;
   const stamped = Number(get('X-TideLog-Fetched-At'));
   return {
-    data: await res.json(),
+    data: body,
     fetchedAt: stamped > 0 ? stamped : Date.now(),
     fromCache: get('X-TideLog-From-Cache') === '1',
   };
@@ -784,10 +795,8 @@ async function refreshNotifications() {
   if (notificationsInFlight) return;
   notificationsInFlight = true;
   try {
-    const res = await fetchWithTimeout('/api/webhooks/deliveries?limit=20');
-    if (!res.ok) throw new Error(`notifications -> ${res.status}`);
-    const data = await res.json();
-    renderNotifications(data.deliveries);
+    const { body } = await fetchJsonWithTimeout('/api/webhooks/deliveries?limit=20');
+    renderNotifications(body.deliveries);
   } catch {
     // Non-fatal; keep showing last known state.
   } finally {
@@ -822,11 +831,14 @@ function refresh() {
 async function runRefresh() {
   let rendered = false;
   const epoch = connectionEpoch;
+  // One controller per cycle: the first read to fail cancels its siblings
+  // instead of leaving them to run out their own timeouts.
+  const cycle = new AbortController();
   try {
     const reads = await Promise.all([
-      fetchData(buildArrivalsUrl()),
-      fetchData('/api/berths'),
-      fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
+      fetchData(buildArrivalsUrl(), cycle.signal),
+      fetchData('/api/berths', cycle.signal),
+      fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`, cycle.signal),
     ]);
     const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
@@ -861,6 +873,7 @@ async function runRefresh() {
     // about the connection that came back.
     lastRefreshLive = epoch === connectionEpoch && reads.every((r) => !r.fromCache);
   } catch {
+    cycle.abort();
     // Reads failed (offline with a cold cache, or a transient error). The board
     // on screen is the last good render, which is not live — a failed refresh
     // must not leave a stale LIVE badge standing (SVD-21).
@@ -868,10 +881,9 @@ async function runRefresh() {
   }
 
   renderSyncState();
-  // Not awaited: the notifications panel is not part of the board, has its own
-  // error handling, and its endpoint is network-only with no timeout. Holding
-  // the single-flight lock on it would let one hung request stall every later
-  // board refresh (Copilot on #61).
+  // Not awaited: the notifications panel is independent of the board's
+  // freshness, so it has its own one-at-a-time guard and timeout rather than
+  // riding (and delaying) the board's single-flight cycle.
   refreshNotifications();
   return rendered;
 }

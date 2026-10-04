@@ -679,6 +679,58 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     expect(boardReads.length).toBe(6); // the second cycle ran
   });
 
+  test('headers that arrive but a body that stalls still time out and free the lock', async () => {
+    // Copilot on #61: the deadline used to end when fetch() resolved (headers),
+    // so a stalled body held the cycle forever.
+    const { window } = await bootApp({ online: true, fromCache: false, refreshTimeoutMs: 40 });
+    let stall = true;
+    const boardReads = [];
+    window.fetch = (url) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      boardReads.push(u);
+      if (stall) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: () => new Promise(() => {}), // body never finishes
+        });
+      }
+      return Promise.resolve(makeRes(boardBody(u, 'MV Back'), { fromCache: false }));
+    };
+    startRefresh(window);
+    await flush();
+    await new Promise((r) => setTimeout(r, 80));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
+
+    stall = false;
+    startRefresh(window);
+    await flush();
+    expect(boardReads.length).toBe(6);
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+  });
+
+  test('when one board read fails, its siblings are cancelled at once', async () => {
+    // Copilot on #61: Promise.all rejects on the first failure but left the
+    // other reads running until their own timeouts. The default 15 s timeout is
+    // in force here, so an abort can only come from the cycle.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    const signals = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      if (u.includes('/api/arrivals')) return Promise.reject(new Error('network'));
+      signals.push(opts && opts.signal);
+      return new Promise(() => {}); // berths and tides hang
+    };
+    startRefresh(window);
+    await flush();
+    expect(signals.length).toBe(2);
+    expect(signals.every((sig) => sig && sig.aborted)).toBe(true);
+  });
+
   test('notifications never overlap: a pending request is not joined by another', async () => {
     // Copilot on #61: with notifications outside the board cycle, each cycle
     // started another fetch while the last was pending, piling up against a hung
