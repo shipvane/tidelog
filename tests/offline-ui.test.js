@@ -731,6 +731,37 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     expect(signals.every((sig) => sig && sig.aborted)).toBe(true);
   });
 
+  test('a Resend during a pending notifications read still gets a read after its write', async () => {
+    // Copilot on #61: the notifications guard used to SKIP a request while one
+    // was pending, so a manual Resend's post-write refresh was dropped and the
+    // older read could leave a pre-resend snapshot on screen.
+    const { window } = await bootApp({ online: true, fromCache: false, deliveries: [DELIVERY] });
+    const { document } = window;
+    const reads = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === 'POST') return Promise.resolve(makeRes({}));
+      if (u.includes('/api/webhooks')) return new Promise((resolve) => reads.push(resolve)); // controlled
+      return Promise.resolve(makeRes(boardBody(u, 'MV Any'), { fromCache: false }));
+    };
+    startRefresh(window); // board cycle starts an automatic notifications read
+    await flush();
+    expect(reads.length).toBe(1);
+
+    document.querySelector('.btn-resend').click(); // POST ok, then wants a re-read
+    await flush();
+    expect(reads.length).toBe(1); // still only the pending automatic read
+
+    reads[0](makeRes({ deliveries: [{ ...DELIVERY, vesselName: 'MV Before Resend' }] }));
+    await flush();
+    expect(reads.length).toBe(2); // the follow-up started after the write
+    reads[1](makeRes({ deliveries: [{ ...DELIVERY, vesselName: 'MV After Resend' }] }));
+    await flush();
+    const panel = document.getElementById('notifications-body').textContent;
+    expect(panel).toContain('MV After Resend');
+    expect(panel).not.toContain('MV Before Resend');
+  });
+
   test('notifications never overlap: a pending request is not joined by another', async () => {
     // Copilot on #61: with notifications outside the board cycle, each cycle
     // started another fetch while the last was pending, piling up against a hung

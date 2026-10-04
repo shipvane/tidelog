@@ -137,8 +137,35 @@ let connectionEpoch = 0;
 // a filter-key check) found another seam. Now a request while one is running is
 // coalesced into a single follow-up that starts when it finishes, so completion
 // order is start order by construction.
-let refreshInFlight = null; // the running cycle's promise
-let refreshQueued = null; // the one follow-up, if anything asked while running
+//
+// The same rule serves the board and the notifications panel, so it lives in one
+// helper. A caller that just wrote (Depart, Resend) gets the result of a run that
+// STARTED after its write: the follow-up, if one was already running.
+function singleFlight(run) {
+  let inFlight = null; // the running cycle's promise
+  let queued = null; // the one follow-up, if anything asked while running
+  const call = () => {
+    if (!inFlight) {
+      inFlight = run().finally(() => {
+        inFlight = null;
+      });
+      return inFlight;
+    }
+    if (!queued) {
+      // Starts once the running cycle has settled (its finally() has cleared
+      // inFlight), and reads the state at THAT time. A rejection must not
+      // strand the follow-up, hence the catch.
+      queued = inFlight
+        .catch(() => {})
+        .then(() => {
+          queued = null;
+          return call();
+        });
+    }
+    return queued;
+  };
+  return call;
+}
 // True while #berths-message holds the post-depart "couldn't refresh" warning, so
 // the next successful render can clear it without erasing a refusal.
 let berthsRefreshWarning = false;
@@ -785,48 +812,26 @@ function renderNotifications(deliveries) {
   }
 }
 
-// Notifications run outside the board's cycle, so they get their own rule: one
-// at a time. A request while one is pending is skipped, not queued (the next
-// board cycle asks again), so requests can't pile up against a hung endpoint
-// and an older response can't overwrite a newer one (Copilot on #61).
-let notificationsInFlight = false;
-
-async function refreshNotifications() {
-  if (notificationsInFlight) return;
-  notificationsInFlight = true;
+// Notifications run outside the board's cycle and get the same rule: one at a
+// time, with requests coalesced into one follow-up. Not skipped: a skip dropped
+// a manual Resend's post-write refresh whenever an automatic read was pending,
+// leaving a pre-resend snapshot on screen (Copilot on #61). Coalescing still
+// bounds a hung endpoint to one running request plus one queued.
+async function runNotifications() {
   try {
     const { body } = await fetchJsonWithTimeout('/api/webhooks/deliveries?limit=20');
     renderNotifications(body.deliveries);
   } catch {
     // Non-fatal; keep showing last known state.
-  } finally {
-    notificationsInFlight = false;
   }
 }
+const refreshNotifications = singleFlight(runNotifications);
 
 /**
- * Re-read and re-render the board, one cycle at a time. Resolves true when the
- * board on screen is current, false when the reads failed. A caller that just
- * wrote (Depart) gets the result of a cycle that STARTED after its write: if one
- * was already running, it gets the follow-up (SVD-18, SVD-23).
+ * Re-read and re-render the board, one cycle at a time (SVD-23). Resolves true
+ * when the board on screen is current, false when the reads failed.
  */
-function refresh() {
-  if (!refreshInFlight) {
-    refreshInFlight = runRefresh().finally(() => {
-      refreshInFlight = null;
-    });
-    return refreshInFlight;
-  }
-  if (!refreshQueued) {
-    // Starts once the running cycle has settled (its finally() has cleared
-    // refreshInFlight), and reads the filter and connection state at THAT time.
-    refreshQueued = refreshInFlight.then(() => {
-      refreshQueued = null;
-      return refresh();
-    });
-  }
-  return refreshQueued;
-}
+const refresh = singleFlight(runRefresh);
 
 async function runRefresh() {
   let rendered = false;
