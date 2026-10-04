@@ -28,12 +28,14 @@ afterEach(() => {
   while (openDoms.length) openDoms.pop().window.close(); // clear app.js intervals
 });
 
-function makeRes(body, { ok = true, status = 200, statusText = 'OK', fetchedAt } = {}) {
+function makeRes(body, { ok = true, status = 200, statusText = 'OK', fetchedAt, fromCache } = {}) {
   const headers = {
-    get: (name) =>
-      fetchedAt !== undefined && String(name).toLowerCase() === 'x-tidelog-fetched-at'
-        ? String(fetchedAt)
-        : null,
+    get: (name) => {
+      const n = String(name).toLowerCase();
+      if (n === 'x-tidelog-fetched-at') return fetchedAt !== undefined ? String(fetchedAt) : null;
+      if (n === 'x-tidelog-from-cache') return fromCache ? '1' : null;
+      return null;
+    },
   };
   return { ok, status, statusText, headers, json: async () => body };
 }
@@ -53,6 +55,8 @@ async function bootApp({
   windows = [],
   deliveries = [],
   stamps = {},
+  fromCache = false,
+  failData = false,
   readOnly = false,
   writeRes = null,
   html = (text) => text,
@@ -73,6 +77,10 @@ async function bootApp({
     // 403); otherwise writes succeed as before.
     if (opts && opts.method && opts.method !== 'GET')
       return Promise.resolve(writeRes || makeRes({}));
+    // failData simulates the server-down / cold-cache case: the board reads
+    // reject outright, so refresh() takes its catch path (SVD-21).
+    if (failData && /\/api\/(arrivals|berths|tides)/.test(u))
+      return Promise.reject(new Error('network'));
     if (u.includes('/api/health')) {
       // /api/health is network-only in the SW, so it has no cache fallback:
       // offline (or on a transient failure a test opts into) it simply fails,
@@ -82,11 +90,11 @@ async function bootApp({
       return Promise.resolve(makeRes({ status: 'ok', service: 'tidelog', readOnly }));
     }
     if (u.includes('/api/arrivals'))
-      return Promise.resolve(makeRes({ arrivals }, { fetchedAt: stamps.arrivals }));
+      return Promise.resolve(makeRes({ arrivals }, { fetchedAt: stamps.arrivals, fromCache }));
     if (u.includes('/api/berths'))
-      return Promise.resolve(makeRes({ berths }, { fetchedAt: stamps.berths }));
+      return Promise.resolve(makeRes({ berths }, { fetchedAt: stamps.berths, fromCache }));
     if (u.includes('/api/tides'))
-      return Promise.resolve(makeRes({ windows }, { fetchedAt: stamps.tides }));
+      return Promise.resolve(makeRes({ windows }, { fetchedAt: stamps.tides, fromCache }));
     if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries }));
     return Promise.resolve(makeRes({}));
   };
@@ -404,5 +412,220 @@ describe('SVD-20 read-only demo mode in the UI', () => {
     expect(msg.hidden).toBe(false);
     expect(msg.textContent.toLowerCase()).toContain('read-only demo');
     expect(msg.textContent).not.toContain('403');
+  });
+});
+
+describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => {
+  test('online with fresh network reads shows LIVE', async () => {
+    const { window } = await bootApp({ online: true, fromCache: false });
+    const badge = window.document.getElementById('status-badge');
+    expect(badge.textContent).toBe('LIVE');
+    expect(badge.className).toContain('badge-live');
+  });
+
+  test('online but reads served from the SW cache shows STALE, not LIVE', async () => {
+    // navigator.onLine is true (captive portal, flaky wifi, server down), but the
+    // SW fell back to cache and stamped X-TideLog-From-Cache. The board is not
+    // live, and the badge must not claim it is.
+    const { window } = await bootApp({ online: true, fromCache: true });
+    const badge = window.document.getElementById('status-badge');
+    expect(badge.textContent).toBe('STALE');
+    expect(badge.className).toContain('badge-stale');
+    // The data IS on screen, just stale, so last-synced still shows.
+    expect(window.document.getElementById('last-synced').hidden).toBe(false);
+  });
+
+  test('a refresh whose reads fail outright (server down, cold cache) is not LIVE', async () => {
+    const { window } = await bootApp({ online: true, failData: true });
+    const badge = window.document.getElementById('status-badge');
+    expect(badge.textContent).not.toBe('LIVE');
+    expect(badge.textContent).toBe('STALE');
+  });
+
+  test('going offline flips to OFFLINE at once, even after a LIVE render', async () => {
+    const { window } = await bootApp({ online: true, fromCache: false });
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    setOnline(window, false);
+    window.dispatchEvent(new window.Event('offline'));
+
+    expect(window.document.getElementById('status-badge').textContent).toBe('OFFLINE');
+  });
+
+  test('reconnecting does not restore LIVE until fresh reads actually land', async () => {
+    // After LIVE → offline → online, the online handler renders before the new
+    // reads return. The pre-offline LIVE verdict must not carry over, or a slow
+    // or hanging read would leave a misleading LIVE standing. It stays STALE
+    // until the reads succeed.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    setOnline(window, false);
+    window.dispatchEvent(new window.Event('offline'));
+    expect(window.document.getElementById('status-badge').textContent).toBe('OFFLINE');
+
+    // Reconnect, but make the board reads hang (never resolve), so the refresh
+    // the online handler kicks off is still pending.
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u)) return new Promise(() => {});
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+    setOnline(window, true);
+    window.dispatchEvent(new window.Event('online'));
+    await flush();
+
+    // Online again, but no fresh read has returned — not LIVE.
+    expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
+  });
+
+  test('a stale LIVE badge does not survive a later failed refresh', async () => {
+    // Today a failed refresh() keeps the last render and leaves the badge as it
+    // was, so "LIVE" could outlive the connection that earned it. It must drop to
+    // STALE once a refresh no longer reaches the server.
+    const { window, calls } = await bootApp({ online: true, fromCache: false });
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    // Flip the mock so the next board reads reject, then trigger a refresh the way
+    // the page does (the type filter calls refresh()).
+    calls.length = 0;
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u)) return Promise.reject(new Error('network'));
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+    window.document.getElementById('type-filter').dispatchEvent(new window.Event('change'));
+    await flush();
+
+    expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
+  });
+
+  test('reads that were in flight across a drop cannot restore LIVE on reconnect', async () => {
+    // Copilot on #59: the offline handler clears the LIVE verdict, but a refresh
+    // already in flight could land afterwards and set it again, so reconnecting
+    // showed LIVE before any read had reached the server since the drop.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    // Start a refresh whose board reads are held open.
+    const pending = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u))
+        return new Promise((resolve) => pending.push({ u, resolve }));
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+    window.document.getElementById('type-filter').dispatchEvent(new window.Event('change'));
+    await flush();
+    expect(pending.length).toBe(3);
+
+    // The connection drops while those reads are in flight...
+    setOnline(window, false);
+    window.dispatchEvent(new window.Event('offline'));
+    expect(window.document.getElementById('status-badge').textContent).toBe('OFFLINE');
+
+    // ...then they land, fresh from the network but from before the drop.
+    for (const p of pending) {
+      const key = p.u.includes('arrivals')
+        ? 'arrivals'
+        : p.u.includes('berths')
+          ? 'berths'
+          : 'windows';
+      p.resolve(makeRes({ [key]: [] }, { fromCache: false }));
+    }
+    await flush();
+
+    // Reconnect with the new reads still pending: nothing has reached the server
+    // since the drop, so the badge must not say LIVE.
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u)) return new Promise(() => {});
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+    setOnline(window, true);
+    window.dispatchEvent(new window.Event('online'));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).not.toBe('LIVE');
+  });
+
+  // Refreshes overlap (timer, type filter, reconnect) and can land out of order.
+  // These hold each refresh's board reads open so the order is exact.
+  function holdBoardReads(window) {
+    const held = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u))
+        return new Promise((resolve, reject) => held.push({ u, resolve, reject }));
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+    return held;
+  }
+  function boardBody(u, vesselName) {
+    if (u.includes('arrivals')) return { arrivals: [{ ...EXPECTED_VESSEL, vesselName }] };
+    if (u.includes('berths')) return { berths: [] };
+    return { windows: [] };
+  }
+  function startRefresh(window) {
+    window.document.getElementById('type-filter').dispatchEvent(new window.Event('change'));
+  }
+
+  test('an older refresh failing after a newer one succeeded does not downgrade it', async () => {
+    const { window } = await bootApp({ online: true, fromCache: false });
+    const older = holdBoardReads(window);
+    startRefresh(window);
+    await flush();
+    const newer = holdBoardReads(window);
+    startRefresh(window);
+    await flush();
+    expect(older.length).toBe(3);
+    expect(newer.length).toBe(3);
+
+    for (const r of newer) r.resolve(makeRes(boardBody(r.u, 'MV Newer'), { fromCache: false }));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    for (const r of older) r.reject(new Error('network'));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+    expect(window.document.getElementById('arrivals-body').textContent).toContain('MV Newer');
+  });
+
+  test('an older cached result landing after a newer fresh one cannot replace it under LIVE', async () => {
+    // Copilot on #59: refresh A starts before a drop, reconnect refresh B lands
+    // fresh, then A lands from cache. A must not replace B's board while the
+    // badge still says LIVE.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    const a = holdBoardReads(window);
+    startRefresh(window);
+    await flush();
+
+    setOnline(window, false);
+    window.dispatchEvent(new window.Event('offline'));
+    const b = holdBoardReads(window);
+    setOnline(window, true);
+    window.dispatchEvent(new window.Event('online')); // starts refresh B
+    await flush();
+    expect(b.length).toBe(3);
+
+    for (const r of b) r.resolve(makeRes(boardBody(r.u, 'MV Fresh'), { fromCache: false }));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    for (const r of a) r.resolve(makeRes(boardBody(r.u, 'MV Cached'), { fromCache: true }));
+    await flush();
+    const board = window.document.getElementById('arrivals-body').textContent;
+    expect(board).toContain('MV Fresh');
+    expect(board).not.toContain('MV Cached');
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
   });
 });

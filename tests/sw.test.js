@@ -424,6 +424,35 @@ describe('service worker — behaviour (driven directly)', () => {
     }
   });
 
+  test('a fallback (offline) answer carries the from-cache marker; a fresh one does not (SVD-21)', async () => {
+    // The LIVE badge keys off this: navigator.onLine reports a network
+    // interface, not whether the harbor server answered. A read served from the
+    // fallback cache must say so; a read that reached the server must not.
+    let online = true;
+    const fetchImpl = jest.fn(async () => {
+      if (!online) throw new Error('offline');
+      return new FakeResponse('{"berths":[]}', { type: 'basic' });
+    });
+    const env = buildEnv(fetchImpl);
+    await warm(env);
+
+    // Fresh network read: no marker.
+    const fresh = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(fresh);
+    const freshServed = await fresh._response;
+    expect(freshServed.headers.get('X-TideLog-From-Cache')).toBeNull();
+    await Promise.all(fresh._waits);
+
+    // Offline: the same read, served from cache, is marked — and keeps its
+    // original fetch stamp so "last synced" stays honest.
+    online = false;
+    const stale = makeEvent({ url: 'http://localhost/api/berths', method: 'GET', mode: 'cors' });
+    env.listeners.fetch(stale);
+    const staleServed = await stale._response;
+    expect(staleServed.headers.get('X-TideLog-From-Cache')).toBe('1');
+    expect(staleServed.headers.get('X-TideLog-Fetched-At')).not.toBeNull();
+  });
+
   test.each([
     '/api/arrivals/a1/dues',
     '/api/arrivals/export.csv',
