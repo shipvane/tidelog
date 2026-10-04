@@ -635,49 +635,45 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     window.document.getElementById('type-filter').dispatchEvent(new window.Event('change'));
   }
 
-  test('an older refresh failing after a newer one succeeded does not downgrade it', async () => {
+  test('a refresh requested mid-run waits, and several requests coalesce into one follow-up', async () => {
+    // SVD-23: refreshes used to run concurrently and finish in any order. Now a
+    // request while one runs issues no fetch; however many arrive, exactly one
+    // follow-up runs after the current cycle.
     const { window } = await bootApp({ online: true, fromCache: false });
-    const older = holdBoardReads(window);
+    const first = holdBoardReads(window);
     startRefresh(window);
     await flush();
-    const newer = holdBoardReads(window);
+    expect(first.length).toBe(3);
+
     startRefresh(window);
+    startRefresh(window);
+    window.dispatchEvent(new window.Event('online')); // reconnect also asks
     await flush();
-    expect(older.length).toBe(3);
-    expect(newer.length).toBe(3);
+    expect(first.length).toBe(3); // nothing new while the first is running
 
-    for (const r of newer) r.resolve(makeRes(boardBody(r.u, 'MV Newer'), { fromCache: false }));
+    for (const r of first) r.resolve(makeRes(boardBody(r.u, 'MV First'), { fromCache: false }));
     await flush();
-    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
-
-    for (const r of older) r.reject(new Error('network'));
-    await flush();
-    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
-    expect(window.document.getElementById('arrivals-body').textContent).toContain('MV Newer');
+    expect(first.length).toBe(6); // exactly one follow-up cycle, not three
   });
 
-  test('an older cached result landing after a newer fresh one cannot replace it under LIVE', async () => {
-    // Copilot on #59: refresh A starts before a drop, reconnect refresh B lands
-    // fresh, then A lands from cache. A must not replace B's board while the
-    // badge still says LIVE.
+  test('the follow-up is what stays on screen: cached first, fresh after, ends LIVE', async () => {
+    // The intent of the old "older cached result cannot replace newer fresh one"
+    // case, now guaranteed by order: the cached cycle renders first, the
+    // follow-up second, and the badge reflects the follow-up.
     const { window } = await bootApp({ online: true, fromCache: false });
-    const a = holdBoardReads(window);
+    const held = holdBoardReads(window);
     startRefresh(window);
     await flush();
-
-    setOnline(window, false);
-    window.dispatchEvent(new window.Event('offline'));
-    const b = holdBoardReads(window);
-    setOnline(window, true);
-    window.dispatchEvent(new window.Event('online')); // starts refresh B
+    startRefresh(window); // queued follow-up
     await flush();
-    expect(b.length).toBe(3);
 
-    for (const r of b) r.resolve(makeRes(boardBody(r.u, 'MV Fresh'), { fromCache: false }));
+    for (const r of held.splice(0, 3))
+      r.resolve(makeRes(boardBody(r.u, 'MV Cached'), { fromCache: true }));
     await flush();
-    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+    expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
 
-    for (const r of a) r.resolve(makeRes(boardBody(r.u, 'MV Cached'), { fromCache: true }));
+    expect(held.length).toBe(3); // the follow-up's reads, issued only now
+    for (const r of held) r.resolve(makeRes(boardBody(r.u, 'MV Fresh'), { fromCache: false }));
     await flush();
     const board = window.document.getElementById('arrivals-body').textContent;
     expect(board).toContain('MV Fresh');
@@ -1003,10 +999,9 @@ describe('SVD-18 Depart action on occupied berths', () => {
     expect(departPosts).toBe(1);
   });
 
-  test('a refresh fetched for a filter no longer selected does not render', async () => {
-    // Copilot on #60: refresh A starts unfiltered, the user picks "tanker"
-    // (refresh B), B fails, then A succeeds. Rendering A would list every vessel
-    // under a "Tanker" dropdown.
+  test('a filter change during a refresh is applied by the follow-up', async () => {
+    // SVD-23 replaces the old filter-key check: a refresh for the old filter
+    // finishes first, then the follow-up fetches for the filter now selected.
     const { window } = await bootApp({ online: true, arrivals: [EXPECTED_VESSEL] });
     const { document } = window;
     const held = [];
@@ -1020,16 +1015,12 @@ describe('SVD-18 Depart action on occupied berths', () => {
     const filter = document.getElementById('type-filter');
     filter.dispatchEvent(new window.Event('change')); // A: unfiltered
     await flush();
-    const a = held.splice(0);
     filter.value = 'tanker';
-    filter.dispatchEvent(new window.Event('change')); // B: tanker
+    filter.dispatchEvent(new window.Event('change')); // queued behind A
     await flush();
-    const b = held.splice(0);
-    expect(b.find((r) => r.u.includes('/api/arrivals')).u).toContain('type=tanker');
+    expect(held.length).toBe(3);
 
-    for (const r of b) r.reject(new Error('network'));
-    await flush();
-    for (const r of a) {
+    for (const r of held.splice(0, 3)) {
       const body = r.u.includes('arrivals')
         ? { arrivals: [{ ...EXPECTED_VESSEL, vesselName: 'MV Unfiltered Cargo' }] }
         : r.u.includes('berths')
@@ -1038,11 +1029,21 @@ describe('SVD-18 Depart action on occupied berths', () => {
       r.resolve(makeRes(body, { fromCache: false }));
     }
     await flush();
-    expect(document.getElementById('arrivals-body').textContent).not.toContain(
-      'MV Unfiltered Cargo'
-    );
+    const follow = held.find((r) => r.u.includes('/api/arrivals'));
+    expect(follow.u).toContain('type=tanker'); // the follow-up reads the new filter
+    for (const r of held) {
+      const body = r.u.includes('arrivals')
+        ? { arrivals: [{ ...EXPECTED_VESSEL, vesselType: 'tanker', vesselName: 'MV Tanker Only' }] }
+        : r.u.includes('berths')
+          ? { berths: [] }
+          : { windows: [] };
+      r.resolve(makeRes(body, { fromCache: false }));
+    }
+    await flush();
+    const board = document.getElementById('arrivals-body').textContent;
+    expect(board).toContain('MV Tanker Only');
+    expect(board).not.toContain('MV Unfiltered Cargo');
   });
-
   test('the "couldn\'t refresh" warning clears once the board catches up, a refusal does not', async () => {
     const { window } = await bootApp({
       online: true,
@@ -1097,10 +1098,11 @@ describe('SVD-18 Depart action on occupied berths', () => {
     expect(msg.textContent.toLowerCase()).toContain('read-only demo');
   });
 
-  test('a slow post-depart refresh that lands after a newer failed one still renders', async () => {
-    // Copilot on #60: a failed refresh used to advance the same mark a render
-    // did, so a slow success landing after it was dropped as "older than what is
-    // on screen" and reported as rendered when nothing had been.
+  test('a refresh started before a Depart cannot clear the post-depart warning (SVD-23)', async () => {
+    // The case deferred from #60: a pre-depart refresh landing after the
+    // post-depart warning rendered the old board and cleared the warning. Now
+    // the pre-depart cycle finishes first and the post-depart follow-up runs
+    // after it, so its failure is the last word.
     const { window } = await bootApp({
       online: true,
       berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
@@ -1114,33 +1116,28 @@ describe('SVD-18 Depart action on occupied berths', () => {
         return new Promise((resolve, reject) => held.push({ u, resolve, reject }));
       return Promise.resolve(makeRes({ deliveries: [] }));
     };
+    document.getElementById('type-filter').dispatchEvent(new window.Event('change')); // pre-depart
+    await flush();
+    departButtons(document)[0].click(); // POST ok; its refresh queues behind
+    await flush();
+    expect(held.length).toBe(3); // only the pre-depart cycle is reading
 
-    departButtons(document)[0].click(); // POST ok, post-depart refresh A held
-    await flush();
-    const a = held.splice(0);
-    document.getElementById('type-filter').dispatchEvent(new window.Event('change')); // refresh B
-    await flush();
-    const b = held.splice(0);
-    expect(a.length).toBe(3);
-    expect(b.length).toBe(3);
-
-    for (const r of b) r.reject(new Error('network')); // B, newer, fails first
-    await flush();
-    for (const r of a) {
+    for (const r of held.splice(0, 3)) {
       const body = r.u.includes('berths')
-        ? { berths: [berthWith([])] }
+        ? { berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])] }
         : r.u.includes('arrivals')
           ? { arrivals: [] }
           : { windows: [] };
-      r.resolve(makeRes(body, { fromCache: false })); // A, older, succeeds
+      r.resolve(makeRes(body, { fromCache: false }));
     }
     await flush();
+    expect(held.length).toBe(3); // now the post-depart follow-up
+    for (const r of held) r.reject(new Error('network'));
+    await flush();
 
-    // A rendered: the departed vessel's button is gone and no "couldn't refresh"
-    // warning was raised for a board that did refresh.
-    expect(departButtons(document).length).toBe(0);
-    expect(document.getElementById('berths-message').textContent).not.toContain("couldn't refresh");
-    // But a later attempt failed, so A cannot claim LIVE.
+    const msg = document.getElementById('berths-message');
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent).toContain('Departure logged');
     expect(document.getElementById('status-badge').textContent).not.toBe('LIVE');
   });
 });

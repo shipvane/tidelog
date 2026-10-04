@@ -92,25 +92,17 @@ let lastRefreshLive = null;
 // read has landed (Copilot on #59). Recording `false` is always safe.
 let connectionEpoch = 0;
 
-// Refreshes overlap (the 30 s timer, the type filter, reconnect) and can land out
-// of order. Each one takes a sequence number when it starts; a result older than
-// what is already on screen is dropped whole, success or failure. Otherwise an
-// older cached result could replace newer fresh data under its LIVE badge, or an
-// older failure could downgrade newer live data to STALE (Copilot on #59).
-//
-// Two marks, not one. `renderedSeq` is the newest refresh that actually RENDERED;
-// only a result older than that is dropped. `failedSeq` is the newest refresh that
-// FAILED; a success older than it still renders (its data is newer than what is on
-// screen) but cannot claim LIVE, because a later attempt could not reach the
-// server. A single mark advanced by failures too made "older than applied" mean
-// "a newer attempt failed", so a slow success was dropped and reported as
-// rendered when nothing had been (Copilot on #60).
-let refreshSeq = 0;
+// One refresh at a time (SVD-23). Refreshes are requested from several places
+// (the 30 s timer, the type filter, reconnect, a successful Depart) and used to
+// run concurrently, finishing in any order; every fix for that (sequence marks,
+// a filter-key check) found another seam. Now a request while one is running is
+// coalesced into a single follow-up that starts when it finishes, so completion
+// order is start order by construction.
+let refreshInFlight = null; // the running cycle's promise
+let refreshQueued = null; // the one follow-up, if anything asked while running
 // True while #berths-message holds the post-depart "couldn't refresh" warning, so
 // the next successful render can clear it without erasing a refusal.
 let berthsRefreshWarning = false;
-let renderedSeq = 0;
-let failedSeq = 0;
 
 function loadLastSynced() {
   try {
@@ -764,27 +756,38 @@ async function refreshNotifications() {
 }
 
 /**
- * Re-read and re-render the board. Resolves true when the board on screen is
- * current (this refresh rendered, or a newer one already had), false when the
- * reads failed. Callers that just wrote need to know (SVD-18).
+ * Re-read and re-render the board, one cycle at a time. Resolves true when the
+ * board on screen is current, false when the reads failed. A caller that just
+ * wrote (Depart) gets the result of a cycle that STARTED after its write: if one
+ * was already running, it gets the follow-up (SVD-18, SVD-23).
  */
-async function refresh() {
-  const seq = ++refreshSeq;
+function refresh() {
+  if (!refreshInFlight) {
+    refreshInFlight = runRefresh().finally(() => {
+      refreshInFlight = null;
+    });
+    return refreshInFlight;
+  }
+  if (!refreshQueued) {
+    // Starts once the running cycle has settled (its finally() has cleared
+    // refreshInFlight), and reads the filter and connection state at THAT time.
+    refreshQueued = refreshInFlight.then(() => {
+      refreshQueued = null;
+      return refresh();
+    });
+  }
+  return refreshQueued;
+}
+
+async function runRefresh() {
   let rendered = false;
   const epoch = connectionEpoch;
-  const arrivalsUrl = buildArrivalsUrl();
   try {
     const reads = await Promise.all([
-      fetchData(arrivalsUrl),
+      fetchData(buildArrivalsUrl()),
       fetchData('/api/berths'),
       fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
-    if (seq < renderedSeq) return true; // a newer refresh already rendered
-    // Fetched for a filter that is no longer selected (a newer filter refresh
-    // started and failed): rendering it would show, say, every vessel under a
-    // "Tanker" dropdown. Drop it; the board is not current (Copilot on #60).
-    if (buildArrivalsUrl() !== arrivalsUrl) return false;
-    renderedSeq = seq;
     const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
     renderArrivals(arrivalsRes.arrivals, berthsRes.berths);
@@ -812,18 +815,12 @@ async function refresh() {
     lastSyncedAt = Math.min(...reads.map((r) => r.fetchedAt));
     saveLastSynced(lastSyncedAt);
 
-    // LIVE only if EVERY read reached the server. If any came from the SW's
-    // fallback cache, the board is current-looking but stale (SVD-21).
-    // LIVE only if every read reached the server AND no drop happened while they
-    // were in flight; reads from before a drop say nothing about the connection
-    // that came back.
-    lastRefreshLive =
-      epoch === connectionEpoch && seq > failedSeq && reads.every((r) => !r.fromCache);
+    // LIVE only if every read reached the server (none came from the SW's
+    // fallback cache, SVD-21) AND no drop happened while they were in flight:
+    // even one cycle can straddle a drop, and reads from before it say nothing
+    // about the connection that came back.
+    lastRefreshLive = epoch === connectionEpoch && reads.every((r) => !r.fromCache);
   } catch {
-    // An older refresh failing after a newer one rendered says nothing about the
-    // data on screen; drop it rather than downgrade that data to STALE.
-    if (seq < renderedSeq) return true; // newer rendered data is on screen
-    failedSeq = Math.max(failedSeq, seq);
     // Reads failed (offline with a cold cache, or a transient error). The board
     // on screen is the last good render, which is not live — a failed refresh
     // must not leave a stale LIVE badge standing (SVD-21).
