@@ -664,6 +664,40 @@ td.notif-retry {
   border: 1px solid var(--red);
 }
 
+/* Up-front "this is a read-only demo" banner (SVD-20). Brass, the same hue the
+   modal uses for a warn, so the demo-mode cue reads as advisory, not an error. */
+.readonly-notice {
+  background: var(--brass-soft);
+  color: var(--brass);
+  border: 1px solid var(--brass);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.95rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+/* Inline refusal/error message inside a panel (e.g. a refused resend). */
+.panel-message {
+  border-radius: 6px;
+  padding: 0.6rem 0.85rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.panel-message-warn {
+  background: var(--brass-soft);
+  color: var(--brass);
+  border: 1px solid var(--brass);
+}
+
+.panel-message-error {
+  background: var(--red-soft);
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+
 .vessel-info {
   background: var(--paper);
   border: 1px solid var(--line);

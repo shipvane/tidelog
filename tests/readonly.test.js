@@ -45,6 +45,20 @@ describe('read-only demo mode', () => {
     await request(app).get('/api/berths').expect(200);
   });
 
+  test('health reports read-only so the UI can say so up front (SVD-20)', async () => {
+    const app = await loadApp(true);
+    const res = await request(app).get('/api/health');
+    expect(res.status).toBe(200);
+    expect(res.body.readOnly).toBe(true);
+  });
+
+  test('health reports writable when the env var is unset (SVD-20)', async () => {
+    const app = await loadApp(false);
+    const res = await request(app).get('/api/health');
+    expect(res.status).toBe(200);
+    expect(res.body.readOnly).toBe(false);
+  });
+
   test('writes are refused with a useful message', async () => {
     const app = await loadApp(true);
     const res = await request(app).post('/api/arrivals').send({ vessel: 'MV Test' });
