@@ -1,6 +1,11 @@
 /* TideLog dashboard — vanilla JS, no build step. */
 
 const REFRESH_MS = 30_000;
+// A board read that hasn't answered by now counts as failed. Refreshes run one
+// at a time (SVD-23), so a read that never settles would hold every later
+// refresh behind it; a timeout turns a hung server into an honest STALE board.
+// `__tidelogRefreshTimeoutMs` exists only so tests needn't wait 15 s.
+const REFRESH_TIMEOUT_MS = window.__tidelogRefreshTimeoutMs || 15_000;
 const REFERENCE_DRAFT_M = 7.0;
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
@@ -59,6 +64,18 @@ async function readErrorMessage(res, fallback) {
  * the harbor server actually answered.
  */
 async function fetchData(url) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${url} timed out`)), REFRESH_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([readData(url), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readData(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url} -> ${res.status}`);
   const get = res.headers && res.headers.get ? (name) => res.headers.get(name) : () => null;
@@ -828,7 +845,11 @@ async function runRefresh() {
   }
 
   renderSyncState();
-  await refreshNotifications();
+  // Not awaited: the notifications panel is not part of the board, has its own
+  // error handling, and its endpoint is network-only with no timeout. Holding
+  // the single-flight lock on it would let one hung request stall every later
+  // board refresh (Copilot on #61).
+  refreshNotifications();
   return rendered;
 }
 

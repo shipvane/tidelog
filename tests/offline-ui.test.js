@@ -60,6 +60,7 @@ async function bootApp({
   readOnly = false,
   writeRes = null,
   html = (text) => text,
+  refreshTimeoutMs,
 } = {}) {
   const pageRes = await request(app).get('/');
   const dom = new JSDOM(html(pageRes.text), {
@@ -100,6 +101,7 @@ async function bootApp({
   };
 
   setOnline(window, online);
+  if (refreshTimeoutMs) window.__tidelogRefreshTimeoutMs = refreshTimeoutMs;
 
   window.eval(APP_JS);
   await flush();
@@ -654,6 +656,51 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     for (const r of first) r.resolve(makeRes(boardBody(r.u, 'MV First'), { fromCache: false }));
     await flush();
     expect(first.length).toBe(6); // exactly one follow-up cycle, not three
+  });
+
+  test('a hung notifications request does not hold up the next board refresh', async () => {
+    // Copilot on #61: the cycle used to await refreshNotifications(), whose
+    // endpoint is network-only with no timeout, so one hung request held the
+    // single-flight lock forever.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    const boardReads = [];
+    window.fetch = (url) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) return new Promise(() => {}); // never answers
+      boardReads.push(u);
+      return Promise.resolve(makeRes(boardBody(u, 'MV Any'), { fromCache: false }));
+    };
+    startRefresh(window);
+    await flush();
+    const afterFirst = boardReads.length;
+    startRefresh(window);
+    await flush();
+    expect(afterFirst).toBe(3);
+    expect(boardReads.length).toBe(6); // the second cycle ran
+  });
+
+  test('a board read that never answers times out: STALE, and the next refresh runs', async () => {
+    const { window } = await bootApp({ online: true, fromCache: false, refreshTimeoutMs: 40 });
+    let hang = true;
+    const boardReads = [];
+    window.fetch = (url) => {
+      const u = String(url);
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      boardReads.push(u);
+      if (hang) return new Promise(() => {});
+      return Promise.resolve(makeRes(boardBody(u, 'MV Back'), { fromCache: false }));
+    };
+    startRefresh(window);
+    await flush();
+    await new Promise((r) => setTimeout(r, 80)); // past the 40 ms timeout
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
+
+    hang = false;
+    startRefresh(window);
+    await flush();
+    expect(boardReads.length).toBe(6); // the lock was released
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
   });
 
   test('the follow-up is what stays on screen: cached first, fresh after, ends LIVE', async () => {
