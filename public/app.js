@@ -582,6 +582,11 @@ window.addEventListener('online', () => {
   refresh();
 });
 window.addEventListener('offline', () => {
+  // Reconnection must re-prove LIVE. Without clearing the verdict, the `online`
+  // handler's renderSyncState() (which runs before the fresh reads land) would
+  // restore the pre-offline LIVE, and a slow or hanging read would leave that
+  // misleading status standing until it eventually settled (SVD-21).
+  lastRefreshLive = false;
   renderSyncState();
 });
 

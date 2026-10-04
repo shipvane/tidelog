@@ -306,6 +306,35 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     expect(window.document.getElementById('status-badge').textContent).toBe('OFFLINE');
   });
 
+  test('reconnecting does not restore LIVE until fresh reads actually land', async () => {
+    // After LIVE → offline → online, the online handler renders before the new
+    // reads return. The pre-offline LIVE verdict must not carry over, or a slow
+    // or hanging read would leave a misleading LIVE standing. It stays STALE
+    // until the reads succeed.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    setOnline(window, false);
+    window.dispatchEvent(new window.Event('offline'));
+    expect(window.document.getElementById('status-badge').textContent).toBe('OFFLINE');
+
+    // Reconnect, but make the board reads hang (never resolve), so the refresh
+    // the online handler kicks off is still pending.
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u)) return new Promise(() => {});
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+    setOnline(window, true);
+    window.dispatchEvent(new window.Event('online'));
+    await flush();
+
+    // Online again, but no fresh read has returned — not LIVE.
+    expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
+  });
+
   test('a stale LIVE badge does not survive a later failed refresh', async () => {
     // Today a failed refresh() keeps the last render and leaves the badge as it
     // was, so "LIVE" could outlive the connection that earned it. It must drop to

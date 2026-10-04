@@ -123,11 +123,13 @@ body {
 }
 
 /* Connected, but the board is served from the offline cache (SVD-21): the data
-   is not live. Brass is the palette's caution tone, between LIVE green and
-   OFFLINE red. */
+   is not live. Brass-soft is the palette's caution tint, between LIVE green and
+   OFFLINE red; the ◐ glyph carries the state too. Text is --ink, not --brass:
+   brass on brass-soft is only 3:1, below WCAG AA for this 0.68rem badge, while
+   --ink on brass-soft clears it comfortably. */
 .badge-stale {
   background: var(--brass-soft);
-  color: var(--brass);
+  color: var(--ink);
 }
 
 .badge-stale::before {
