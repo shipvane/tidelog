@@ -26,7 +26,9 @@ describe('GET /api/health', () => {
   test('reports the service is up', async () => {
     const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: 'ok', service: 'tidelog' });
+    // readOnly tells the UI it is talking to the public demo (SVD-20); the
+    // default app is writable, so it reports false here.
+    expect(res.body).toEqual({ status: 'ok', service: 'tidelog', readOnly: false });
   });
 });
 

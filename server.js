@@ -43,8 +43,16 @@ if (process.env.TIDELOG_READ_ONLY === 'true') {
   });
 }
 
+// `readOnly` lets the UI know it is talking to the public demo BEFORE the user
+// acts, so a write control can explain itself instead of the page only finding
+// out when a 403 comes back. The server is the single source of truth here
+// (TIDELOG_READ_ONLY), so the client never infers demo mode from the hostname.
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'tidelog' });
+  res.json({
+    status: 'ok',
+    service: 'tidelog',
+    readOnly: process.env.TIDELOG_READ_ONLY === 'true',
+  });
 });
 
 // Service-worker kill switch (see public/sw.js). The SW polls this network-first

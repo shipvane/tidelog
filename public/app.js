@@ -32,6 +32,24 @@ async function fetchJson(url) {
 }
 
 /**
+ * Turn a failed write response into something a person can read. The server
+ * always explains itself in the body — the read-only demo guard returns
+ * `{ error, message }` (server.js) and the route handlers return `{ error }` —
+ * so prefer the server's own words over a bare status code. `fallback` is used
+ * only when the body carries neither, so the user never sees silence.
+ */
+async function readErrorMessage(res, fallback) {
+  try {
+    const body = await res.json();
+    if (body && typeof body.message === 'string' && body.message) return body.message;
+    if (body && typeof body.error === 'string' && body.error) return body.error;
+  } catch {
+    // Body was not JSON; fall through to the caller's human-readable fallback.
+  }
+  return fallback;
+}
+
+/**
  * Harbor-data read that also reports WHEN the data was fetched. The service
  * worker stamps every copy it stores with `X-TideLog-Fetched-At`, so an offline
  * answer from its cache says how old it is. No header means the response came
@@ -94,6 +112,39 @@ function renderSyncState() {
   } else {
     synced.hidden = true;
     synced.textContent = '';
+  }
+}
+
+// SVD-20: the live site runs read-only (TIDELOG_READ_ONLY), where every /api
+// write is refused with a 403. The page learns this from the server so it can
+// say so up front rather than letting a write fail with a bare status code.
+// Demo mode is never inferred from the hostname — the server is the only source.
+let readOnly = false;
+
+async function loadReadOnly() {
+  try {
+    const health = await fetchJson('/api/health');
+    readOnly = Boolean(health && health.readOnly);
+  } catch {
+    readOnly = false; // can't confirm — assume writable so nothing is hidden
+  }
+  renderReadOnlyNotice();
+}
+
+/** Show the demo-mode banner once, plainly, when the server reports read-only. */
+function renderReadOnlyNotice() {
+  const notice = document.getElementById('readonly-notice');
+  // Missing on an older cached index.html (see renderSyncState) — the banner
+  // just goes unshown until the shell revalidates; writes are still explained
+  // on refusal below.
+  if (!notice) return;
+  if (readOnly) {
+    notice.hidden = false;
+    notice.textContent =
+      'This is a public read-only demo of TideLog. Assigning a berth and resending a notification are disabled here — clone the repo to run a writable copy.';
+  } else {
+    notice.hidden = true;
+    notice.textContent = '';
   }
 }
 
@@ -257,7 +308,12 @@ async function openAssignModal(arrival, allBerths) {
         handleCancel();
         await refresh(); // Refresh the entire page to show the updated assignment
       } else {
-        setModalMessage(`Failed to assign berth: ${res.status} ${res.statusText}`, 'error');
+        // Show the server's own words (the read-only demo message, a 409, etc.),
+        // never a bare status code. The selection stays so nothing is lost.
+        setModalMessage(
+          await readErrorMessage(res, 'The berth could not be assigned. Please try again.'),
+          'error'
+        );
       }
     } catch {
       // The connection dropped mid-submit. Treat it like offline: keep the
@@ -420,14 +476,46 @@ const EVENT_LABELS = {
   departure_logged: 'Departure logged',
 };
 
+/**
+ * Show or clear a message in the notifications panel. `kind` styles it
+ * ('warn' | 'error'); passing no text hides it. Guarded for an older cached
+ * index.html that predates the element (see renderSyncState).
+ */
+function setNotificationsMessage(text, kind) {
+  const box = document.getElementById('notifications-message');
+  if (!box) return;
+  if (!text) {
+    box.hidden = true;
+    box.textContent = '';
+    box.className = 'panel-message';
+    return;
+  }
+  box.hidden = false;
+  box.textContent = text;
+  box.className = `panel-message panel-message-${kind || 'warn'}`;
+}
+
 /** Trigger a manual resend for a delivery log entry, then refresh the panel. */
 async function resendDelivery(deliveryId) {
+  setNotificationsMessage(null); // clear any message from a previous attempt
   try {
-    await fetch(`/api/webhooks/deliveries/${deliveryId}/resend`, { method: 'POST' });
+    const res = await fetch(`/api/webhooks/deliveries/${deliveryId}/resend`, { method: 'POST' });
+    if (!res.ok) {
+      // A 403 does not throw, so this used to fail in silence on the read-only
+      // demo. Report the server's own message instead of swallowing it.
+      setNotificationsMessage(
+        await readErrorMessage(res, 'The notification could not be resent. Please try again.'),
+        'error'
+      );
+      return;
+    }
     await refreshNotifications();
   } catch {
-    // Silently ignore network errors on manual resend; the log will reflect the
-    // outcome on the next automatic refresh.
+    // The connection dropped. Say so rather than leaving the click unexplained.
+    setNotificationsMessage(
+      "Couldn't reach the harbor server to resend — check your connection and try again.",
+      'warn'
+    );
   }
 }
 
@@ -553,5 +641,6 @@ window.addEventListener('offline', () => {
 tickClock();
 setInterval(tickClock, 1000);
 renderSyncState(); // reflect stored last-synced + connection state before the first fetch
+loadReadOnly(); // surface demo read-only mode before the user tries to write
 refresh();
 setInterval(refresh, REFRESH_MS);

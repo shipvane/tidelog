@@ -36,6 +36,8 @@
     </header>
 
     <main class="container">
+      <div id="readonly-notice" class="readonly-notice" role="status" hidden></div>
+
       <section class="stats" aria-label="Harbor status">
         <article class="stat">
           <span class="stat-label">Vessels expected</span>
@@ -119,6 +121,7 @@
           <h2 id="notifications-heading">Agent notifications</h2>
           <span class="panel-note" id="notifications-note"></span>
         </div>
+        <div id="notifications-message" class="panel-message" role="alert" hidden></div>
         <div class="table-wrap">
           <table>
             <thead>
