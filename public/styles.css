@@ -507,10 +507,17 @@ td .imo {
 
 /* No solid-brass fill on hover: every text colour fails AA on --brass (white
    3.61:1, ink 4.16:1). Card + ink stays readable (and uses tokens, not #fff). */
-.btn-depart:hover {
+.btn-depart:hover:not(:disabled) {
   background: var(--card);
   color: var(--ink);
   border-color: var(--ink);
+}
+
+/* Same disabled affordance as .btn-primary: a departed vessel's button can stay
+   on screen briefly (logged, board not yet refreshed) and must not look live. */
+.btn-depart:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .maint-reason {

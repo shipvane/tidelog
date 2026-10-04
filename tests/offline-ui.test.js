@@ -1003,6 +1003,100 @@ describe('SVD-18 Depart action on occupied berths', () => {
     expect(departPosts).toBe(1);
   });
 
+  test('a refresh fetched for a filter no longer selected does not render', async () => {
+    // Copilot on #60: refresh A starts unfiltered, the user picks "tanker"
+    // (refresh B), B fails, then A succeeds. Rendering A would list every vessel
+    // under a "Tanker" dropdown.
+    const { window } = await bootApp({ online: true, arrivals: [EXPECTED_VESSEL] });
+    const { document } = window;
+    const held = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u))
+        return new Promise((resolve, reject) => held.push({ u, resolve, reject }));
+      return Promise.resolve(makeRes({ deliveries: [] }));
+    };
+    const filter = document.getElementById('type-filter');
+    filter.dispatchEvent(new window.Event('change')); // A: unfiltered
+    await flush();
+    const a = held.splice(0);
+    filter.value = 'tanker';
+    filter.dispatchEvent(new window.Event('change')); // B: tanker
+    await flush();
+    const b = held.splice(0);
+    expect(b.find((r) => r.u.includes('/api/arrivals')).u).toContain('type=tanker');
+
+    for (const r of b) r.reject(new Error('network'));
+    await flush();
+    for (const r of a) {
+      const body = r.u.includes('arrivals')
+        ? { arrivals: [{ ...EXPECTED_VESSEL, vesselName: 'MV Unfiltered Cargo' }] }
+        : r.u.includes('berths')
+          ? { berths: [] }
+          : { windows: [] };
+      r.resolve(makeRes(body, { fromCache: false }));
+    }
+    await flush();
+    expect(document.getElementById('arrivals-body').textContent).not.toContain(
+      'MV Unfiltered Cargo'
+    );
+  });
+
+  test('the "couldn\'t refresh" warning clears once the board catches up, a refusal does not', async () => {
+    const { window } = await bootApp({
+      online: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+    });
+    const { document } = window;
+    let boardOk = false;
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === 'POST') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u)) {
+        if (!boardOk) return Promise.reject(new Error('network'));
+        const body = u.includes('arrivals')
+          ? { arrivals: [] }
+          : u.includes('berths')
+            ? { berths: [berthWith([occupant('arr-2', 'MV Two', 'arrived')])] }
+            : { windows: [] };
+        return Promise.resolve(makeRes(body, { fromCache: false }));
+      }
+      return Promise.resolve(makeRes({ deliveries: [] }));
+    };
+    departButtons(document)[0].click(); // logged, but the refresh fails
+    await flush();
+    const msg = document.getElementById('berths-message');
+    expect(msg.textContent).toContain("couldn't refresh");
+
+    boardOk = true; // the next periodic refresh succeeds
+    document.getElementById('type-filter').dispatchEvent(new window.Event('change'));
+    await flush();
+    expect(msg.hidden).toBe(true);
+
+    // A refusal is about an action, not the board: a refresh must not erase it.
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === 'POST') return Promise.resolve(READ_ONLY_403());
+      if (/\/api\/(arrivals|berths|tides)/.test(u)) {
+        const body = u.includes('arrivals')
+          ? { arrivals: [] }
+          : u.includes('berths')
+            ? { berths: [berthWith([occupant('arr-2', 'MV Two', 'arrived')])] }
+            : { windows: [] };
+        return Promise.resolve(makeRes(body, { fromCache: false }));
+      }
+      return Promise.resolve(makeRes({ deliveries: [] }));
+    };
+    departButtons(document)[0].click();
+    await flush();
+    expect(msg.textContent.toLowerCase()).toContain('read-only demo');
+    document.getElementById('type-filter').dispatchEvent(new window.Event('change'));
+    await flush();
+    expect(msg.hidden).toBe(false);
+    expect(msg.textContent.toLowerCase()).toContain('read-only demo');
+  });
+
   test('a slow post-depart refresh that lands after a newer failed one still renders', async () => {
     // Copilot on #60: a failed refresh used to advance the same mark a render
     // did, so a slow success landing after it was dropped as "older than what is

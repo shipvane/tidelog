@@ -106,6 +106,9 @@ let connectionEpoch = 0;
 // "a newer attempt failed", so a slow success was dropped and reported as
 // rendered when nothing had been (Copilot on #60).
 let refreshSeq = 0;
+// True while #berths-message holds the post-depart "couldn't refresh" warning, so
+// the next successful render can clear it without erasing a refusal.
+let berthsRefreshWarning = false;
 let renderedSeq = 0;
 let failedSeq = 0;
 
@@ -472,6 +475,7 @@ function setBerthsMessage(text, kind) {
  */
 async function departVessel(arrivalId, btn) {
   setBerthsMessage(null); // clear any message from a previous attempt
+  berthsRefreshWarning = false;
 
   // Refuse while offline rather than queue: a departure logged against a stale
   // board could be wrong, and the live demo refuses writes anyway (SVD-13/20).
@@ -501,6 +505,7 @@ async function departVessel(arrivalId, btn) {
           "Departure logged. The board couldn't refresh just now and will catch up on the next update.",
           'warn'
         );
+        berthsRefreshWarning = true;
       }
     } else {
       // Show the server's own words — the read-only 403 message, or a 409 when
@@ -767,14 +772,18 @@ async function refresh() {
   const seq = ++refreshSeq;
   let rendered = false;
   const epoch = connectionEpoch;
+  const arrivalsUrl = buildArrivalsUrl();
   try {
-    const arrivalsUrl = buildArrivalsUrl();
     const reads = await Promise.all([
       fetchData(arrivalsUrl),
       fetchData('/api/berths'),
       fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
     if (seq < renderedSeq) return true; // a newer refresh already rendered
+    // Fetched for a filter that is no longer selected (a newer filter refresh
+    // started and failed): rendering it would show, say, every vessel under a
+    // "Tanker" dropdown. Drop it; the board is not current (Copilot on #60).
+    if (buildArrivalsUrl() !== arrivalsUrl) return false;
     renderedSeq = seq;
     const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
@@ -794,6 +803,12 @@ async function refresh() {
     // It comes from the responses themselves: offline, these are cached copies
     // still stamped with when they were really fetched.
     rendered = true;
+    // The board caught up, so a "couldn't refresh" warning is no longer true.
+    // Refusal messages are left alone: they describe an action, not the board.
+    if (berthsRefreshWarning) {
+      berthsRefreshWarning = false;
+      setBerthsMessage(null);
+    }
     lastSyncedAt = Math.min(...reads.map((r) => r.fetchedAt));
     saveLastSynced(lastSyncedAt);
 
