@@ -85,6 +85,13 @@ async function fetchData(url) {
 const LAST_SYNCED_KEY = 'tidelog:last-synced';
 let lastRefreshLive = null;
 
+// Bumped every time the connection drops. A refresh records a LIVE verdict only
+// if no drop happened while its reads were in flight: reads that started before
+// a drop and land after it say nothing about the connection that comes back, and
+// letting them set LIVE would restore the badge on reconnect before any fresh
+// read has landed (Copilot on #59). Recording `false` is always safe.
+let connectionEpoch = 0;
+
 function loadLastSynced() {
   try {
     const raw = localStorage.getItem(LAST_SYNCED_KEY);
@@ -617,6 +624,7 @@ async function refreshNotifications() {
 }
 
 async function refresh() {
+  const epoch = connectionEpoch;
   try {
     const arrivalsUrl = buildArrivalsUrl();
     const reads = await Promise.all([
@@ -646,7 +654,7 @@ async function refresh() {
 
     // LIVE only if EVERY read reached the server. If any came from the SW's
     // fallback cache, the board is current-looking but stale (SVD-21).
-    lastRefreshLive = reads.every((r) => !r.fromCache);
+    if (epoch === connectionEpoch) lastRefreshLive = reads.every((r) => !r.fromCache);
   } catch {
     // Reads failed (offline with a cold cache, or a transient error). The board
     // on screen is the last good render, which is not live — a failed refresh
@@ -681,6 +689,7 @@ window.addEventListener('offline', () => {
   // handler's renderSyncState() (which runs before the fresh reads land) would
   // restore the pre-offline LIVE, and a slow or hanging read would leave that
   // misleading status standing until it eventually settled (SVD-21).
+  connectionEpoch += 1;
   lastRefreshLive = false;
   renderSyncState();
 });

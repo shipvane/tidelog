@@ -503,4 +503,56 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
 
     expect(window.document.getElementById('status-badge').textContent).toBe('STALE');
   });
+
+  test('reads that were in flight across a drop cannot restore LIVE on reconnect', async () => {
+    // Copilot on #59: the offline handler clears the LIVE verdict, but a refresh
+    // already in flight could land afterwards and set it again, so reconnecting
+    // showed LIVE before any read had reached the server since the drop.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    // Start a refresh whose board reads are held open.
+    const pending = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u))
+        return new Promise((resolve) => pending.push({ u, resolve }));
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+    window.document.getElementById('type-filter').dispatchEvent(new window.Event('change'));
+    await flush();
+    expect(pending.length).toBe(3);
+
+    // The connection drops while those reads are in flight...
+    setOnline(window, false);
+    window.dispatchEvent(new window.Event('offline'));
+    expect(window.document.getElementById('status-badge').textContent).toBe('OFFLINE');
+
+    // ...then they land, fresh from the network but from before the drop.
+    for (const p of pending) {
+      const key = p.u.includes('arrivals')
+        ? 'arrivals'
+        : p.u.includes('berths')
+          ? 'berths'
+          : 'windows';
+      p.resolve(makeRes({ [key]: [] }, { fromCache: false }));
+    }
+    await flush();
+
+    // Reconnect with the new reads still pending: nothing has reached the server
+    // since the drop, so the badge must not say LIVE.
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u)) return new Promise(() => {});
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+    setOnline(window, true);
+    window.dispatchEvent(new window.Event('online'));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).not.toBe('LIVE');
+  });
 });
