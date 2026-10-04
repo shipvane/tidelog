@@ -92,6 +92,14 @@ let lastRefreshLive = null;
 // read has landed (Copilot on #59). Recording `false` is always safe.
 let connectionEpoch = 0;
 
+// Refreshes overlap (the 30 s timer, the type filter, reconnect) and can land out
+// of order. Each one takes a sequence number when it starts; a result older than
+// what is already on screen is dropped whole, success or failure. Otherwise an
+// older cached result could replace newer fresh data under its LIVE badge, or an
+// older failure could downgrade newer live data to STALE (Copilot on #59).
+let refreshSeq = 0;
+let appliedSeq = 0;
+
 function loadLastSynced() {
   try {
     const raw = localStorage.getItem(LAST_SYNCED_KEY);
@@ -624,6 +632,7 @@ async function refreshNotifications() {
 }
 
 async function refresh() {
+  const seq = ++refreshSeq;
   const epoch = connectionEpoch;
   try {
     const arrivalsUrl = buildArrivalsUrl();
@@ -632,6 +641,8 @@ async function refresh() {
       fetchData('/api/berths'),
       fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
+    if (seq < appliedSeq) return; // a newer refresh is already on screen
+    appliedSeq = seq;
     const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
     renderArrivals(arrivalsRes.arrivals, berthsRes.berths);
@@ -654,8 +665,15 @@ async function refresh() {
 
     // LIVE only if EVERY read reached the server. If any came from the SW's
     // fallback cache, the board is current-looking but stale (SVD-21).
-    if (epoch === connectionEpoch) lastRefreshLive = reads.every((r) => !r.fromCache);
+    // LIVE only if every read reached the server AND no drop happened while they
+    // were in flight; reads from before a drop say nothing about the connection
+    // that came back.
+    lastRefreshLive = epoch === connectionEpoch && reads.every((r) => !r.fromCache);
   } catch {
+    // An older refresh failing after a newer one rendered says nothing about the
+    // data on screen; drop it rather than downgrade that data to STALE.
+    if (seq < appliedSeq) return;
+    appliedSeq = seq;
     // Reads failed (offline with a cold cache, or a transient error). The board
     // on screen is the last good render, which is not live — a failed refresh
     // must not leave a stale LIVE badge standing (SVD-21).

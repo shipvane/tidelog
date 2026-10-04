@@ -555,4 +555,77 @@ describe('SVD-21 the LIVE badge reflects the data, not navigator.onLine', () => 
     await flush();
     expect(window.document.getElementById('status-badge').textContent).not.toBe('LIVE');
   });
+
+  // Refreshes overlap (timer, type filter, reconnect) and can land out of order.
+  // These hold each refresh's board reads open so the order is exact.
+  function holdBoardReads(window) {
+    const held = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method && opts.method !== 'GET') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u))
+        return new Promise((resolve, reject) => held.push({ u, resolve, reject }));
+      if (u.includes('/api/webhooks')) return Promise.resolve(makeRes({ deliveries: [] }));
+      return Promise.resolve(makeRes({}));
+    };
+    return held;
+  }
+  function boardBody(u, vesselName) {
+    if (u.includes('arrivals')) return { arrivals: [{ ...EXPECTED_VESSEL, vesselName }] };
+    if (u.includes('berths')) return { berths: [] };
+    return { windows: [] };
+  }
+  function startRefresh(window) {
+    window.document.getElementById('type-filter').dispatchEvent(new window.Event('change'));
+  }
+
+  test('an older refresh failing after a newer one succeeded does not downgrade it', async () => {
+    const { window } = await bootApp({ online: true, fromCache: false });
+    const older = holdBoardReads(window);
+    startRefresh(window);
+    await flush();
+    const newer = holdBoardReads(window);
+    startRefresh(window);
+    await flush();
+    expect(older.length).toBe(3);
+    expect(newer.length).toBe(3);
+
+    for (const r of newer) r.resolve(makeRes(boardBody(r.u, 'MV Newer'), { fromCache: false }));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    for (const r of older) r.reject(new Error('network'));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+    expect(window.document.getElementById('arrivals-body').textContent).toContain('MV Newer');
+  });
+
+  test('an older cached result landing after a newer fresh one cannot replace it under LIVE', async () => {
+    // Copilot on #59: refresh A starts before a drop, reconnect refresh B lands
+    // fresh, then A lands from cache. A must not replace B's board while the
+    // badge still says LIVE.
+    const { window } = await bootApp({ online: true, fromCache: false });
+    const a = holdBoardReads(window);
+    startRefresh(window);
+    await flush();
+
+    setOnline(window, false);
+    window.dispatchEvent(new window.Event('offline'));
+    const b = holdBoardReads(window);
+    setOnline(window, true);
+    window.dispatchEvent(new window.Event('online')); // starts refresh B
+    await flush();
+    expect(b.length).toBe(3);
+
+    for (const r of b) r.resolve(makeRes(boardBody(r.u, 'MV Fresh'), { fromCache: false }));
+    await flush();
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+
+    for (const r of a) r.resolve(makeRes(boardBody(r.u, 'MV Cached'), { fromCache: true }));
+    await flush();
+    const board = window.document.getElementById('arrivals-body').textContent;
+    expect(board).toContain('MV Fresh');
+    expect(board).not.toContain('MV Cached');
+    expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
+  });
 });
