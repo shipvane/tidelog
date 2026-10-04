@@ -75,8 +75,10 @@ async function bootApp({
       return Promise.resolve(writeRes || makeRes({}));
     if (u.includes('/api/health')) {
       // /api/health is network-only in the SW, so it has no cache fallback:
-      // offline, the request simply fails, like it would in the browser.
-      if (!window.navigator.onLine) return Promise.reject(new Error('offline'));
+      // offline (or on a transient failure a test opts into) it simply fails,
+      // like it would in the browser.
+      if (!window.navigator.onLine || window.__failHealth)
+        return Promise.reject(new Error('offline'));
       return Promise.resolve(makeRes({ status: 'ok', service: 'tidelog', readOnly }));
     }
     if (u.includes('/api/arrivals'))
@@ -362,6 +364,21 @@ describe('SVD-20 read-only demo mode in the UI', () => {
     expect(notice.hidden).toBe(true);
 
     setOnline(window, true);
+    window.dispatchEvent(new window.Event('online'));
+    await flush();
+
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent.toLowerCase()).toContain('read-only demo');
+  });
+
+  test('a transient health failure does not erase a confirmed read-only notice', async () => {
+    const { window } = await bootApp({ online: true, readOnly: true });
+    const notice = window.document.getElementById('readonly-notice');
+    expect(notice.hidden).toBe(false); // confirmed on boot
+
+    // A later online event whose /api/health fails transiently must keep the
+    // known state, not clear it and hide the banner.
+    window.__failHealth = true;
     window.dispatchEvent(new window.Event('online'));
     await flush();
 

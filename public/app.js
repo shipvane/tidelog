@@ -125,10 +125,13 @@ async function loadReadOnly() {
   try {
     const health = await fetchJson('/api/health');
     readOnly = Boolean(health && health.readOnly);
+    renderReadOnlyNotice();
   } catch {
-    readOnly = false; // can't confirm — assume writable so nothing is hidden
+    // Couldn't reach /api/health (e.g. offline). Keep whatever was last confirmed
+    // rather than clearing a known read-only state and hiding the notice — a
+    // transient failure on a reconnect must not erase it. The startup default is
+    // writable, from the initial declaration above.
   }
-  renderReadOnlyNotice();
 }
 
 /** Show the demo-mode banner once, plainly, when the server reports read-only. */
