@@ -144,7 +144,7 @@ function renderReadOnlyNotice() {
   if (readOnly) {
     notice.hidden = false;
     notice.textContent =
-      'This is a public read-only demo of TideLog. Assigning a berth and resending a notification are disabled here — clone the repo to run a writable copy.';
+      "This is a public read-only demo of TideLog — changes you make here aren't saved. Clone the repo to run a writable copy.";
   } else {
     notice.hidden = true;
     notice.textContent = '';
