@@ -97,8 +97,17 @@ let connectionEpoch = 0;
 // what is already on screen is dropped whole, success or failure. Otherwise an
 // older cached result could replace newer fresh data under its LIVE badge, or an
 // older failure could downgrade newer live data to STALE (Copilot on #59).
+//
+// Two marks, not one. `renderedSeq` is the newest refresh that actually RENDERED;
+// only a result older than that is dropped. `failedSeq` is the newest refresh that
+// FAILED; a success older than it still renders (its data is newer than what is on
+// screen) but cannot claim LIVE, because a later attempt could not reach the
+// server. A single mark advanced by failures too made "older than applied" mean
+// "a newer attempt failed", so a slow success was dropped and reported as
+// rendered when nothing had been (Copilot on #60).
 let refreshSeq = 0;
-let appliedSeq = 0;
+let renderedSeq = 0;
+let failedSeq = 0;
 
 function loadLastSynced() {
   try {
@@ -432,8 +441,19 @@ function renderArrivals(arrivals, berths) {
  * index.html that predates the element (see renderSyncState).
  */
 function setBerthsMessage(text, kind) {
-  const box = document.getElementById('berths-message');
-  if (!box) return;
+  let box = document.getElementById('berths-message');
+  if (!box) {
+    // An older cached index.html has no #berths-message, but this app.js still
+    // renders Depart buttons there, so a refusal would be silent. Create the box
+    // beside the berth list rather than drop the message (Copilot on #60).
+    if (!text) return;
+    const list = document.getElementById('berth-list');
+    if (!list || !list.parentNode) return;
+    box = document.createElement('div');
+    box.id = 'berths-message';
+    box.setAttribute('role', 'alert');
+    list.parentNode.insertBefore(box, list);
+  }
   if (!text) {
     box.hidden = true;
     box.textContent = '';
@@ -754,8 +774,8 @@ async function refresh() {
       fetchData('/api/berths'),
       fetchData(`/api/tides/windows?draftM=${REFERENCE_DRAFT_M}`),
     ]);
-    if (seq < appliedSeq) return true; // a newer refresh is already on screen
-    appliedSeq = seq;
+    if (seq < renderedSeq) return true; // a newer refresh already rendered
+    renderedSeq = seq;
     const [arrivalsRes, berthsRes, windowsRes] = reads.map((r) => r.data);
 
     renderArrivals(arrivalsRes.arrivals, berthsRes.berths);
@@ -782,12 +802,13 @@ async function refresh() {
     // LIVE only if every read reached the server AND no drop happened while they
     // were in flight; reads from before a drop say nothing about the connection
     // that came back.
-    lastRefreshLive = epoch === connectionEpoch && reads.every((r) => !r.fromCache);
+    lastRefreshLive =
+      epoch === connectionEpoch && seq > failedSeq && reads.every((r) => !r.fromCache);
   } catch {
     // An older refresh failing after a newer one rendered says nothing about the
     // data on screen; drop it rather than downgrade that data to STALE.
-    if (seq < appliedSeq) return true; // newer data is on screen
-    appliedSeq = seq;
+    if (seq < renderedSeq) return true; // newer rendered data is on screen
+    failedSeq = Math.max(failedSeq, seq);
     // Reads failed (offline with a cold cache, or a transient error). The board
     // on screen is the last good render, which is not live — a failed refresh
     // must not leave a stale LIVE badge standing (SVD-21).

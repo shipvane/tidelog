@@ -337,6 +337,28 @@ describe('SVD-13 dashboard offline behaviour', () => {
     expect(window.document.getElementById('status-badge').textContent).toBe('LIVE');
   });
 
+  test('on older cached markup, a refused Depart still shows the server message', async () => {
+    // Copilot on #60: the guard returned silently when #berths-message was
+    // missing, so on the live read-only demo a returning visitor's refused Depart
+    // said nothing. The box is now created beside the berth list on demand.
+    const oldMarkup = (text) => text.replace(/<div[^>]*id="berths-message"[^>]*><\/div>/, '');
+    const { window } = await bootApp({
+      online: true,
+      readOnly: true,
+      arrivals: [EXPECTED_VESSEL],
+      berths: [OCCUPIED_BERTH],
+      writeRes: READ_ONLY_403(),
+      html: oldMarkup,
+    });
+    expect(window.document.getElementById('berths-message')).toBeNull();
+    window.document.querySelector('.btn-depart').click();
+    await flush();
+    const box = window.document.getElementById('berths-message');
+    expect(box).not.toBeNull();
+    expect(box.getAttribute('role')).toBe('alert');
+    expect(box.textContent.toLowerCase()).toContain('read-only demo');
+  });
+
   test('the refusal message is announced to assistive tech', async () => {
     const { window } = await bootApp({ online: true });
     expect(window.document.getElementById('modal-message').getAttribute('role')).toBe('alert');
@@ -979,5 +1001,52 @@ describe('SVD-18 Depart action on occupied berths', () => {
     await flush();
 
     expect(departPosts).toBe(1);
+  });
+
+  test('a slow post-depart refresh that lands after a newer failed one still renders', async () => {
+    // Copilot on #60: a failed refresh used to advance the same mark a render
+    // did, so a slow success landing after it was dropped as "older than what is
+    // on screen" and reported as rendered when nothing had been.
+    const { window } = await bootApp({
+      online: true,
+      berths: [berthWith([occupant('arr-1', 'MV One', 'arrived')])],
+    });
+    const { document } = window;
+    const held = [];
+    window.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === 'POST') return Promise.resolve(makeRes({}));
+      if (/\/api\/(arrivals|berths|tides)/.test(u))
+        return new Promise((resolve, reject) => held.push({ u, resolve, reject }));
+      return Promise.resolve(makeRes({ deliveries: [] }));
+    };
+
+    departButtons(document)[0].click(); // POST ok, post-depart refresh A held
+    await flush();
+    const a = held.splice(0);
+    document.getElementById('type-filter').dispatchEvent(new window.Event('change')); // refresh B
+    await flush();
+    const b = held.splice(0);
+    expect(a.length).toBe(3);
+    expect(b.length).toBe(3);
+
+    for (const r of b) r.reject(new Error('network')); // B, newer, fails first
+    await flush();
+    for (const r of a) {
+      const body = r.u.includes('berths')
+        ? { berths: [berthWith([])] }
+        : r.u.includes('arrivals')
+          ? { arrivals: [] }
+          : { windows: [] };
+      r.resolve(makeRes(body, { fromCache: false })); // A, older, succeeds
+    }
+    await flush();
+
+    // A rendered: the departed vessel's button is gone and no "couldn't refresh"
+    // warning was raised for a board that did refresh.
+    expect(departButtons(document).length).toBe(0);
+    expect(document.getElementById('berths-message').textContent).not.toContain("couldn't refresh");
+    // But a later attempt failed, so A cannot claim LIVE.
+    expect(document.getElementById('status-badge').textContent).not.toBe('LIVE');
   });
 });
