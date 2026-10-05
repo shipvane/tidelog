@@ -16,6 +16,18 @@
   --green-soft: #e2f2e9;
   --red: #a63d3d;
   --red-soft: #f7e5e5;
+  /* Text-strength accents: --brass and --teal fail WCAG AA as text on their own
+     -soft backgrounds (3.08:1, 4.28:1). These pass on -soft and on --card
+     (SVD-22). Borders and fills keep the lighter accents (3:1 is the bar there). */
+  --brass-text: #7c6030;
+  --teal-text: #0f707b;
+  /* Former literal hexes, unchanged values (CLAUDE.md: no literal hex in rules). */
+  --topbar-fg: #eaf1f7;
+  --topbar-muted: #9db4c8;
+  --row-alt: #f8fafc;
+  --teal-dark: #0a6369;
+  --teal-line: #bcdfe1;
+  --hover-soft: #f0f3f7;
   --radius: 10px;
   font-size: 16px;
 }
@@ -41,7 +53,7 @@ body {
 
 .topbar {
   background: linear-gradient(180deg, var(--navy-900), var(--navy-800));
-  color: #eaf1f7;
+  color: var(--topbar-fg);
   border-bottom: 3px solid var(--brass);
 }
 
@@ -77,7 +89,7 @@ body {
 .brand-sub {
   margin: 0;
   font-size: 0.8rem;
-  color: #9db4c8;
+  color: var(--topbar-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -297,7 +309,7 @@ thead th {
 }
 
 tbody tr:nth-child(even) {
-  background: #f8fafc;
+  background: var(--row-alt);
 }
 
 td.vessel {
@@ -330,7 +342,7 @@ td .imo {
 
 .pill-expected {
   background: var(--brass-soft);
-  color: var(--brass);
+  color: var(--brass-text);
 }
 
 .pill-arrived {
@@ -344,7 +356,7 @@ td .imo {
 }
 
 .pill-departed {
-  background: #eef2f5;
+  background: var(--paper);
   color: var(--muted);
 }
 
@@ -355,7 +367,7 @@ td .imo {
 
 .pill-type {
   background: var(--teal-soft);
-  color: var(--teal);
+  color: var(--teal-text);
   text-transform: capitalize;
 }
 
@@ -373,13 +385,13 @@ td .imo {
 
 .btn-primary {
   background: var(--teal);
-  color: #fff;
+  color: var(--card);
   border-color: var(--teal);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #0a6369;
-  border-color: #0a6369;
+  background: var(--teal-dark);
+  border-color: var(--teal-dark);
 }
 
 .btn-primary:disabled {
@@ -394,14 +406,14 @@ td .imo {
 }
 
 .btn-secondary:hover {
-  background: #f0f3f7;
+  background: var(--hover-soft);
   border-color: var(--muted);
 }
 
 .btn-assign {
   background: var(--teal-soft);
-  color: var(--teal);
-  border: 1px solid #bcdfe1;
+  color: var(--teal-text);
+  border: 1px solid var(--teal-line);
   padding: 0.2rem 0.65rem;
   font-size: 0.75rem;
   font-weight: 600;
@@ -412,7 +424,7 @@ td .imo {
 
 .btn-assign:hover {
   background: var(--teal);
-  color: #fff;
+  color: var(--card);
   border-color: var(--teal);
 }
 
@@ -506,7 +518,7 @@ td .imo {
 }
 
 /* No solid-brass fill on hover: every text colour fails AA on --brass (white
-   3.61:1, ink 4.16:1). Card + ink stays readable (and uses tokens, not #fff). */
+   3.61:1, ink 4.16:1). Card + ink stays readable, and uses tokens rather than a literal white. */
 .btn-depart:hover:not(:disabled) {
   background: var(--card);
   color: var(--ink);
@@ -538,8 +550,8 @@ td .imo {
 
 .window-chip {
   background: var(--teal-soft);
-  border: 1px solid #bcdfe1;
-  color: var(--teal);
+  border: 1px solid var(--teal-line);
+  color: var(--teal-text);
   border-radius: 8px;
   padding: 0.5rem 0.85rem;
   font-size: 0.82rem;
@@ -551,7 +563,8 @@ td .imo {
   display: block;
   font-size: 0.7rem;
   font-weight: 500;
-  color: var(--muted);
+  /* Sits on the chip's --teal-soft, where --muted is 4.38:1 (SVD-22). */
+  color: var(--teal-text);
 }
 
 /* ---------- notifications panel ---------- */
@@ -578,8 +591,8 @@ td.notif-retry {
 
 .btn-resend {
   background: var(--teal-soft);
-  color: var(--teal);
-  border: 1px solid #bcdfe1;
+  color: var(--teal-text);
+  border: 1px solid var(--teal-line);
   border-radius: 6px;
   padding: 0.2rem 0.65rem;
   font-size: 0.75rem;
@@ -590,7 +603,7 @@ td.notif-retry {
 
 .btn-resend:hover {
   background: var(--teal);
-  color: #fff;
+  color: var(--card);
   border-color: var(--teal);
 }
 
@@ -693,7 +706,7 @@ td.notif-retry {
 
 .modal-message-warn {
   background: var(--brass-soft);
-  color: var(--brass);
+  color: var(--brass-text);
   border: 1px solid var(--brass);
 }
 
@@ -707,7 +720,7 @@ td.notif-retry {
    modal uses for a warn, so the demo-mode cue reads as advisory, not an error. */
 .readonly-notice {
   background: var(--brass-soft);
-  color: var(--brass);
+  color: var(--brass-text);
   border: 1px solid var(--brass);
   border-radius: var(--radius);
   padding: 0.7rem 0.95rem;
@@ -727,7 +740,7 @@ td.notif-retry {
 
 .panel-message-warn {
   background: var(--brass-soft);
-  color: var(--brass);
+  color: var(--brass-text);
   border: 1px solid var(--brass);
 }
 
@@ -804,6 +817,11 @@ td.notif-retry {
 .berth-option-specs {
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+/* The hovered option turns --teal-soft, where --muted is 4.38:1 (SVD-22). */
+.berth-option:hover .berth-option-specs {
+  color: var(--teal-text);
 }
 
 .modal-foot {
